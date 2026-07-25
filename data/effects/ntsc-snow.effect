@@ -385,25 +385,45 @@ float4 PSDraw(VertData v) : TARGET
 
 technique Encode
 {
-	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSEncode(v_in); }
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSEncode(v);
+	}
 }
 
 technique Detect
 {
-	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDetect(v_in); }
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSDetect(v);
+	}
 }
 
 technique Decode
 {
-	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDecode(v_in); }
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSDecode(v);
+	}
 }
 
 technique Display
 {
-	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDisplay(v_in); }
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSDisplay(v);
+	}
 }
 
 technique Draw
 {
-	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDraw(v_in); }
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSDraw(v);
+	}
 }
