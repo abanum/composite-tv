@@ -65,6 +65,12 @@ uniform float vignette;
 uniform float overscan;
 uniform float pixels_per_line;    // output pixels per active ln
 
+// Power on/off animation
+uniform float warmup;             // 0: dark .. 1: full brightness
+uniform float collapse_v;         // 1: normal .. 0: collapsed to a horizontal line
+uniform float collapse_h;         // 1: normal .. 0: converged to a centre dot
+uniform float flash;              // discharge flash amount
+
 #define PI 3.141592653589793
 
 /* FIR tap radii (compile-time constants; kept as #define for the effect parser) */
@@ -366,6 +372,14 @@ float4 PSDisplay(VertData v) : TARGET
 
 	uv = (uv - 0.5) * (1.0 - overscan * 2.0) + 0.5;
 
+	// Power-off collapse: shrink the picture into a horizontal line, then a
+	// centre dot, by magnifying the reference around the centre.
+	float cV = max(collapse_v, 0.0025);
+	float cH = max(collapse_h, 0.0025);
+	uv.y = (uv.y - 0.5) / cV + 0.5;
+	uv.x = (uv.x - 0.5) / cH + 0.5;
+	float bandMask = step(0.0, uv.y) * step(uv.y, 1.0) * step(0.0, uv.x) * step(uv.x, 1.0);
+
 	float lineF = uv.y * active_lines - 0.5;
 	int base = (int)floor(lineF);
 	int maxLine = (int)active_lines;
@@ -394,6 +408,15 @@ float4 PSDisplay(VertData v) : TARGET
 	float2 vg = suv * 2.0 - 1.0;
 	float vig = 1.0 - vignette * dot(vg, vg) * 0.55;
 	col *= clamp(vig, 0.0, 1.0);
+
+	// Collapse band + discharge flash.
+	col *= bandMask;
+	col += float3(flash, flash, flash) * bandMask;
+
+	// Warm-up: dark at first, brightening from the centre outward.
+	float centerGlow = 1.0 - dot(vg, vg) * 0.6;
+	float warm = clamp(warmup * 1.4 - 0.4, 0.0, 1.0) * lerp(0.4, 1.0, clamp(centerGlow, 0.0, 1.0));
+	col *= clamp(warm + warmup * 0.2, 0.0, 1.0);
 
 	return float4(col * inScreen, 1.0);
 }

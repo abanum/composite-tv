@@ -38,6 +38,14 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define BURST_PHASE_RAD (57.0 * NS_PI / 180.0)
 #define CHROMA_DEMOD_LPF_HZ 600000.0
 
+/* Power on/off envelope (seconds), ported from the reference PowerEnvelope. */
+#define WARMUP_SEC 1.5f
+#define COLLAPSE_V_SEC 0.13f
+#define COLLAPSE_H_SEC 0.28f
+#define AFTERGLOW_SEC 0.55f
+
+enum power_state { POWER_OFF = 0, POWER_WARMING, POWER_ON, POWER_SHUTTING };
+
 struct ntsc_snow {
 	obs_source_t *source;
 	gs_effect_t *effect;
@@ -56,6 +64,11 @@ struct ntsc_snow {
 	double chroma_phase_acc;
 	uint32_t field_counter;
 	int field_index4;
+
+	/* power on/off envelope */
+	bool powered;         /* target state (from settings / dock) */
+	int power_state;      /* enum power_state */
+	float power_elapsed;  /* seconds in current state */
 
 	/* parameters */
 	float field_strength;
@@ -117,6 +130,77 @@ static inline void set_tex(gs_effect_t *e, const char *n, gs_texture_t *t)
 		gs_effect_set_texture(p, t);
 }
 
+/* ---- power on/off envelope ------------------------------------------- */
+
+static inline float ease_out_expo(float x)
+{
+	return x >= 1.0f ? 1.0f : 1.0f - powf(2.0f, -10.0f * x);
+}
+
+static void power_advance(struct ntsc_snow *f, float dt)
+{
+	/* edge-triggered transitions from the target 'powered' state */
+	if (f->powered && (f->power_state == POWER_OFF || f->power_state == POWER_SHUTTING)) {
+		f->power_state = POWER_WARMING;
+		f->power_elapsed = 0.0f;
+	} else if (!f->powered && (f->power_state == POWER_ON || f->power_state == POWER_WARMING)) {
+		f->power_state = POWER_SHUTTING;
+		f->power_elapsed = 0.0f;
+	}
+
+	f->power_elapsed += dt;
+	if (f->power_state == POWER_WARMING && f->power_elapsed >= WARMUP_SEC) {
+		f->power_state = POWER_ON;
+	} else if (f->power_state == POWER_SHUTTING &&
+		   f->power_elapsed >= COLLAPSE_V_SEC + COLLAPSE_H_SEC + AFTERGLOW_SEC) {
+		f->power_state = POWER_OFF;
+	}
+}
+
+static void power_uniforms(const struct ntsc_snow *f, float *warmup, float *cv, float *ch, float *flash)
+{
+	float t = f->power_elapsed;
+	if (f->power_state == POWER_WARMING) {
+		float tn = t / WARMUP_SEC;
+		tn = tn < 0.0f ? 0.0f : (tn > 1.0f ? 1.0f : tn);
+		*warmup = tn * tn * (3.0f - 2.0f * tn);
+		*cv = 1.0f;
+		*ch = 1.0f;
+		*flash = 0.0f;
+	} else if (f->power_state == POWER_ON) {
+		*warmup = 1.0f;
+		*cv = 1.0f;
+		*ch = 1.0f;
+		*flash = 0.0f;
+	} else if (f->power_state == POWER_SHUTTING) {
+		if (t < COLLAPSE_V_SEC) {
+			float p = ease_out_expo(t / COLLAPSE_V_SEC);
+			*warmup = 1.0f;
+			*cv = 1.0f - p;
+			*ch = 1.0f;
+			*flash = p * 0.6f;
+		} else if (t < COLLAPSE_V_SEC + COLLAPSE_H_SEC) {
+			float p = ease_out_expo((t - COLLAPSE_V_SEC) / COLLAPSE_H_SEC);
+			*warmup = 1.0f;
+			*cv = 0.0f;
+			*ch = 1.0f - p;
+			*flash = 0.6f + p * 0.4f;
+		} else {
+			float p = (t - COLLAPSE_V_SEC - COLLAPSE_H_SEC) / AFTERGLOW_SEC;
+			float fade = expf(-4.0f * (p > 1.0f ? 1.0f : p));
+			*warmup = fade;
+			*cv = 0.0f;
+			*ch = 0.0f;
+			*flash = fade;
+		}
+	} else {
+		*warmup = 0.0f;
+		*cv = 1.0f;
+		*ch = 1.0f;
+		*flash = 0.0f;
+	}
+}
+
 /* ---- OBS source callbacks -------------------------------------------- */
 
 static const char *ntsc_get_name(void *unused)
@@ -136,6 +220,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->enc_chroma_gain = (float)obs_data_get_double(s, "enc_chroma_gain");
 	f->aspect_mode = (int)obs_data_get_int(s, "aspect_mode");
 	f->screen_aspect = (int)obs_data_get_int(s, "screen_aspect");
+	f->powered = obs_data_get_bool(s, "power");
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
 	f->if_bandwidth = (float)obs_data_get_double(s, "if_bandwidth");
@@ -172,6 +257,9 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	bfree(path);
 
 	ntsc_update(f, settings);
+	/* start already settled in the target state (no animation on load) */
+	f->power_state = f->powered ? POWER_ON : POWER_OFF;
+	f->power_elapsed = 0.0f;
 	return f;
 }
 
@@ -313,6 +401,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	f->field_counter++;
 	f->field_index4 = (f->field_index4 + 1) & 3;
 	f->chroma_phase_acc = fmod(f->chroma_phase_acc + (double)f->chroma_drift * dt, 2.0 * NS_PI);
+	power_advance(f, dt);
 
 	gs_effect_t *e = f->effect;
 
@@ -365,7 +454,14 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	if (!disp_prev)
 		disp_prev = field_cur;
 
+	float warmup, cv, ch, flash;
+	power_uniforms(f, &warmup, &cv, &ch, &flash);
+
 	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
+	set_f(e, "warmup", warmup);
+	set_f(e, "collapse_v", cv);
+	set_f(e, "collapse_h", ch);
+	set_f(e, "flash", flash);
 	set_tex(e, "field_prev", field_prev);
 	set_tex(e, "display_prev", disp_prev);
 	gs_texture_t *display_cur = run_pass(e, f->display[f->display_idx], cx, cy, "Display", field_cur);
@@ -389,6 +485,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	UNUSED_PARAMETER(data);
 	obs_properties_t *p = obs_properties_create();
 
+	obs_properties_add_bool(p, "power", obs_module_text("NTSCSnow.Power"));
 	obs_properties_add_float_slider(p, "field_strength", obs_module_text("NTSCSnow.FieldStrength"), 0.0, 1.0,
 					0.01);
 	obs_properties_add_float_slider(p, "noise_floor", obs_module_text("NTSCSnow.NoiseFloor"), 0.0, 0.30, 0.01);
@@ -440,6 +537,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 
 static void ntsc_defaults(obs_data_t *s)
 {
+	obs_data_set_default_bool(s, "power", true);
 	obs_data_set_default_double(s, "field_strength", 1.00);
 	obs_data_set_default_double(s, "noise_floor", 0.04);
 	obs_data_set_default_int(s, "yc_mode", 1);

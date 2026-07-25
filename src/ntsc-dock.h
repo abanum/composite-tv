@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+NTSC Snow — control dock
+Copyright (C) 2026
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,24 +16,15 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include <obs-module.h>
-#include <plugin-support.h>
+#pragma once
 
-#include "ntsc-snow-filter.h"
-#include "ntsc-dock.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
+/* Registers the "NTSC Snow" control dock with the OBS frontend. */
+void ntsc_dock_register(void);
 
-bool obs_module_load(void)
-{
-	obs_register_source(&ntsc_snow_filter_info);
-	ntsc_dock_register();
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r6-dock] (version %s)", PLUGIN_VERSION);
-	return true;
+#ifdef __cplusplus
 }
-
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
-}
+#endif
