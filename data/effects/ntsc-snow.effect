@@ -278,6 +278,10 @@ float4 PSDecode(VertData v) : TARGET
 	luma /= max(lnorm, 1.0e-6);
 
 	// --- chrominance (synchronous detection + post LPF) ---
+	// The local-oscillator drift (chroma_phase) only rotates the hue in the
+	// no-signal limit (snow). With any field strength the receiver locks to
+	// the colour burst, so gate the drift out as soon as a picture appears.
+	float cyc = chroma_phase * (1.0 - smoothstep(0.0, 0.08, field_strength));
 	float linePhase = field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
 	float ci = 0.0;
 	float cq = 0.0;
@@ -291,7 +295,7 @@ float4 PSDecode(VertData v) : TARGET
 			s = 0.5 * (compAt(n + k, ln) - compAt(n + k, ln - 1));
 		else
 			s = compAt(n + k, ln) - 0.5 * (compAt(n + k, ln - 1) + compAt(n + k, ln + 1));
-		float ph = 0.5 * PI * (float)(n + k) + linePhase + burst_phase + chroma_phase;
+		float ph = 0.5 * PI * (float)(n + k) + linePhase + burst_phase + cyc;
 		ci += s * cos(ph) * wgt;
 		cq += s * sin(ph) * wgt;
 		cnorm += wgt;
@@ -351,7 +355,7 @@ float4 PSDisplay(VertData v) : TARGET
 
 	uv = (uv - 0.5) * (1.0 - overscan * 2.0) + 0.5;
 
-	float lineF = (1.0 - uv.y) * active_lines - 0.5;
+	float lineF = uv.y * active_lines - 0.5;
 	int base = (int)floor(lineF);
 	int maxLine = (int)active_lines;
 
