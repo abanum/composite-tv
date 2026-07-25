@@ -233,52 +233,51 @@ static gs_texture_t *run_pass(gs_effect_t *e, gs_texrender_t *tr, uint32_t w, ui
 	return gs_texrender_get_texture(tr);
 }
 
-/* Give EVERY effect parameter a value so no draw is ever skipped with
- * "Not all shader parameters were set". Non-texture params default to zero,
- * textures to a placeholder; the real values are assigned afterwards. */
-static void prime_all_params(gs_effect_t *e, gs_texture_t *placeholder)
+/* Assign every scalar effect parameter. libobs clears all parameter values at
+ * the end of each technique (gs_technique_end -> da_resize(cur_val, 0)), so
+ * this MUST be called again immediately before every pass, otherwise later
+ * passes draw with unset parameters and the D3D11 backend skips them
+ * ("Not all shader parameters were set"). */
+static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy, float luma_cut,
+			 float field_base_phase)
 {
-	size_t count = gs_effect_get_num_params(e);
-	for (size_t i = 0; i < count; i++) {
-		gs_eparam_t *p = gs_effect_get_param_by_idx(e, i);
-		struct gs_effect_param_info info;
-		gs_effect_get_param_info(p, &info);
-		switch (info.type) {
-		case GS_SHADER_PARAM_BOOL:
-			gs_effect_set_bool(p, false);
-			break;
-		case GS_SHADER_PARAM_FLOAT:
-			gs_effect_set_float(p, 0.0f);
-			break;
-		case GS_SHADER_PARAM_INT:
-			gs_effect_set_int(p, 0);
-			break;
-		case GS_SHADER_PARAM_VEC2: {
-			struct vec2 z;
-			vec2_zero(&z);
-			gs_effect_set_vec2(p, &z);
-			break;
-		}
-		case GS_SHADER_PARAM_VEC3: {
-			struct vec3 z;
-			vec3_zero(&z);
-			gs_effect_set_vec3(p, &z);
-			break;
-		}
-		case GS_SHADER_PARAM_VEC4: {
-			struct vec4 z;
-			vec4_zero(&z);
-			gs_effect_set_vec4(p, &z);
-			break;
-		}
-		case GS_SHADER_PARAM_TEXTURE:
-			gs_effect_set_texture(p, placeholder);
-			break;
-		default:
-			/* matrices (ViewProj) are set automatically by the backend */
-			break;
-		}
-	}
+	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
+	set_v2(e, "output_size", (float)cx, (float)cy);
+	set_f(e, "burst_phase", (float)BURST_PHASE_RAD);
+	set_f(e, "field_base_phase", field_base_phase);
+	/* Encode */
+	set_f(e, "luma_cutoff", luma_cut);
+	set_f(e, "cutoff_i", (float)(f->chroma_band_i * 1.0e6 / SAMPLE_RATE_HZ));
+	set_f(e, "cutoff_q", (float)(f->chroma_band_q * 1.0e6 / SAMPLE_RATE_HZ));
+	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
+	set_f(e, "aspect_mode", (float)f->aspect_mode);
+	set_f(e, "input_aspect", (float)cx / (float)cy);
+	/* Detect */
+	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
+	set_f(e, "if_cutoff", (float)(f->if_bandwidth * 1.0e6 * 0.5 / SAMPLE_RATE_HZ));
+	set_f(e, "field_strength", f->field_strength);
+	set_f(e, "noise_floor", f->noise_floor);
+	set_f(e, "agc_jitter", f->agc_jitter);
+	set_f(e, "snow_level", f->agc_level);
+	/* Decode */
+	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
+	set_f(e, "chroma_gain", f->color_killer ? 0.0f : f->chroma_gain);
+	set_f(e, "chroma_phase", (float)f->chroma_phase_acc);
+	set_f(e, "contrast", f->contrast);
+	set_f(e, "brightness", f->brightness);
+	set_f(e, "yc_mode", (float)f->yc_mode);
+	/* Display */
+	set_f(e, "active_lines", (float)ACTIVE_LINES);
+	set_f(e, "interlace_on", f->interlace ? 1.0f : 0.0f);
+	set_f(e, "frame_parity", (float)(f->field_index4 & 1));
+	set_f(e, "persistence", f->persistence);
+	set_f(e, "spot_v", f->spot_v);
+	set_f(e, "spot_h", f->spot_h);
+	set_f(e, "scanline", f->scanline);
+	set_f(e, "curvature", f->curvature);
+	set_f(e, "vignette", f->vignette);
+	set_f(e, "overscan", f->overscan);
+	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
 }
 
 static void ntsc_render(void *data, gs_effect_t *unused)
@@ -332,82 +331,37 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	const float luma_cut = (float)(f->luma_bandwidth * 1.0e6 / SAMPLE_RATE_HZ);
 	const float field_base_phase = (float)fmod(NS_PI * (double)f->field_index4, 2.0 * NS_PI);
 
-	/* Create every render target up front, then give every effect parameter
-	 * a value. The D3D11 backend skips a draw (logging "Not all shader
-	 * parameters were set") if ANY parameter is unset at draw time, which
-	 * blanks the output. */
 	ensure_tr(&f->composite, GS_RGBA16F);
 	ensure_tr(&f->detector, GS_RGBA16F);
 	ensure_tr(&f->field[0], GS_RGBA16F);
 	ensure_tr(&f->field[1], GS_RGBA16F);
 	ensure_tr(&f->display[0], GS_RGBA);
 	ensure_tr(&f->display[1], GS_RGBA);
-	prime_all_params(e, input_tex);
 
-	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
-	set_v2(e, "output_size", (float)cx, (float)cy);
-	set_f(e, "burst_phase", (float)BURST_PHASE_RAD);
-	set_f(e, "field_base_phase", field_base_phase);
-	/* Encode */
-	set_f(e, "luma_cutoff", luma_cut);
-	set_f(e, "cutoff_i", (float)(f->chroma_band_i * 1.0e6 / SAMPLE_RATE_HZ));
-	set_f(e, "cutoff_q", (float)(f->chroma_band_q * 1.0e6 / SAMPLE_RATE_HZ));
-	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
-	set_f(e, "aspect_mode", (float)f->aspect_mode);
-	set_f(e, "input_aspect", (float)cx / (float)cy);
-	/* Detect */
-	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
-	set_f(e, "if_cutoff", (float)(f->if_bandwidth * 1.0e6 * 0.5 / SAMPLE_RATE_HZ));
-	set_f(e, "field_strength", f->field_strength);
-	set_f(e, "noise_floor", f->noise_floor);
-	set_f(e, "agc_jitter", f->agc_jitter);
-	set_f(e, "snow_level", f->agc_level);
-	/* Decode */
-	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
-	set_f(e, "chroma_gain", f->color_killer ? 0.0f : f->chroma_gain);
-	set_f(e, "chroma_phase", (float)f->chroma_phase_acc);
-	set_f(e, "contrast", f->contrast);
-	set_f(e, "brightness", f->brightness);
-	set_f(e, "yc_mode", (float)f->yc_mode);
-	/* Display */
-	set_f(e, "active_lines", (float)ACTIVE_LINES);
-	set_f(e, "interlace_on", f->interlace ? 1.0f : 0.0f);
-	set_f(e, "frame_parity", (float)(f->field_index4 & 1));
-	set_f(e, "persistence", f->persistence);
-	set_f(e, "spot_v", f->spot_v);
-	set_f(e, "spot_h", f->spot_h);
-	set_f(e, "scanline", f->scanline);
-	set_f(e, "curvature", f->curvature);
-	set_f(e, "vignette", f->vignette);
-	set_f(e, "overscan", f->overscan);
-	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
-	set_tex(e, "field_prev", input_tex);
-	set_tex(e, "display_prev", input_tex);
+	/* libobs clears every effect parameter at the end of each technique, so
+	 * apply_params() must run again before every single pass. */
 
 	/* 2) Encode -> 3) Detect -> 4) Decode */
-	ensure_tr(&f->composite, GS_RGBA16F);
+	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
 	gs_texture_t *comp = run_pass(e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex);
 
-	ensure_tr(&f->detector, GS_RGBA16F);
+	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
 	gs_texture_t *det = run_pass(e, f->detector, FIELD_W, FIELD_H, "Detect", comp);
 
-	ensure_tr(&f->field[0], GS_RGBA16F);
-	ensure_tr(&f->field[1], GS_RGBA16F);
+	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
 	gs_texture_t *field_cur = run_pass(e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det);
 
 	/* 5) Display: interlaced CRT presentation into the display buffer */
 	gs_texture_t *field_prev = gs_texrender_get_texture(f->field[1 - f->field_idx]);
 	if (!field_prev)
 		field_prev = field_cur;
-	set_tex(e, "field_prev", field_prev);
-
 	gs_texture_t *disp_prev = gs_texrender_get_texture(f->display[1 - f->display_idx]);
 	if (!disp_prev)
 		disp_prev = field_cur;
-	set_tex(e, "display_prev", disp_prev);
 
-	ensure_tr(&f->display[0], GS_RGBA);
-	ensure_tr(&f->display[1], GS_RGBA);
+	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
+	set_tex(e, "field_prev", field_prev);
+	set_tex(e, "display_prev", disp_prev);
 	gs_texture_t *display_cur = run_pass(e, f->display[f->display_idx], cx, cy, "Display", field_cur);
 
 	/* 6) blit the final frame to the actual filter output */

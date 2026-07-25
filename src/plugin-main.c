@@ -27,7 +27,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 bool obs_module_load(void)
 {
 	obs_register_source(&ntsc_snow_filter_info);
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r3-prime] (version %s)", PLUGIN_VERSION);
+	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r4-perpass] (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
