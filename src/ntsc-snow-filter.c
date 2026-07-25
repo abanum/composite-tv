@@ -37,6 +37,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define SAMPLE_RATE_HZ 14318180.0 /* 4 * 3.579545 MHz */
 #define BURST_PHASE_RAD (57.0 * NS_PI / 180.0)
 #define CHROMA_DEMOD_LPF_HZ 600000.0
+/* Settings are in MHz; the shader wants cutoffs normalised to the sample rate. */
+#define MHZ_TO_NORM (1.0e6 / SAMPLE_RATE_HZ)
 
 /* Power on/off envelope (seconds), ported from the reference PowerEnvelope. */
 #define WARMUP_SEC 1.5f
@@ -59,32 +61,32 @@ struct ntsc_snow {
 	int field_idx;
 	int display_idx;
 
-	/* animation state */
+	/* animation state. field_counter drives the four-field sequence: its low
+	 * bit is the line parity and the field base phase. */
 	uint64_t last_time;
 	double chroma_phase_acc;
 	uint32_t field_counter;
-	int field_index4;
 
 	/* power on/off envelope */
-	bool powered;         /* target state (from settings / dock) */
-	int power_state;      /* enum power_state */
-	float power_elapsed;  /* seconds in current state */
+	bool powered;                    /* target state (from settings / dock) */
+	enum power_state power_state;
+	float power_elapsed;             /* seconds in current state */
 
-	/* parameters */
+	/* parameters. Frequencies are stored already normalised to the sample
+	 * rate, and plain gates (colour killer, glitch group) already applied. */
 	float field_strength;
 	float noise_floor;
 	int yc_mode;
-	float chroma_band_i;
-	float chroma_band_q;
+	float cutoff_i;
+	float cutoff_q;
 	float enc_chroma_gain;
 	int aspect_mode;
 	int screen_aspect;
 	float agc_level;
 	float agc_jitter;
-	float if_bandwidth;
-	float luma_bandwidth;
+	float if_cutoff;
+	float luma_cutoff;
 	float chroma_gain;
-	bool color_killer;
 	float chroma_drift;
 	float contrast;
 	float brightness;
@@ -98,7 +100,6 @@ struct ntsc_snow {
 	float overscan;
 
 	/* glitches */
-	bool glitch_enable;
 	float ghost_gain;
 	float ghost_delay;
 	float v_roll_speed;
@@ -108,7 +109,7 @@ struct ntsc_snow {
 	float head_switch;
 	float dropout;
 	float beat_gain;
-	float beat_freq;
+	float beat_norm;
 	float burst_len;
 
 	/* glitch animation state */
@@ -191,48 +192,47 @@ static void power_advance(struct ntsc_snow *f, float dt)
 	}
 }
 
-static void power_uniforms(const struct ntsc_snow *f, float *warmup, float *cv, float *ch, float *flash)
+/* What the display stage needs to know about the power envelope. Deflection is
+ * normal and there is no flash unless we are shutting down, so that is the
+ * initialiser and only the interesting cases assign. */
+struct power_gfx {
+	float warmup;
+	float collapse_v;
+	float collapse_h;
+	float flash;
+};
+
+static struct power_gfx power_uniforms(const struct ntsc_snow *f)
 {
+	struct power_gfx g = {0.0f, 1.0f, 1.0f, 0.0f};
 	float t = f->power_elapsed;
+
 	if (f->power_state == POWER_WARMING) {
-		float tn = t / WARMUP_SEC;
-		tn = tn < 0.0f ? 0.0f : (tn > 1.0f ? 1.0f : tn);
-		*warmup = tn * tn * (3.0f - 2.0f * tn);
-		*cv = 1.0f;
-		*ch = 1.0f;
-		*flash = 0.0f;
+		float tn = clampf(t / WARMUP_SEC, 0.0f, 1.0f);
+		g.warmup = tn * tn * (3.0f - 2.0f * tn);
 	} else if (f->power_state == POWER_ON) {
-		*warmup = 1.0f;
-		*cv = 1.0f;
-		*ch = 1.0f;
-		*flash = 0.0f;
+		g.warmup = 1.0f;
 	} else if (f->power_state == POWER_SHUTTING) {
+		g.warmup = 1.0f;
 		if (t < COLLAPSE_V_SEC) {
 			float p = ease_out_expo(t / COLLAPSE_V_SEC);
-			*warmup = 1.0f;
-			*cv = 1.0f - p;
-			*ch = 1.0f;
-			*flash = p * 0.6f;
+			g.collapse_v = 1.0f - p;
+			g.flash = p * 0.6f;
 		} else if (t < COLLAPSE_V_SEC + COLLAPSE_H_SEC) {
 			float p = ease_out_expo((t - COLLAPSE_V_SEC) / COLLAPSE_H_SEC);
-			*warmup = 1.0f;
-			*cv = 0.0f;
-			*ch = 1.0f - p;
-			*flash = 0.6f + p * 0.4f;
+			g.collapse_v = 0.0f;
+			g.collapse_h = 1.0f - p;
+			g.flash = 0.6f + p * 0.4f;
 		} else {
 			float p = (t - COLLAPSE_V_SEC - COLLAPSE_H_SEC) / AFTERGLOW_SEC;
 			float fade = expf(-4.0f * (p > 1.0f ? 1.0f : p));
-			*warmup = fade;
-			*cv = 0.0f;
-			*ch = 0.0f;
-			*flash = fade;
+			g.warmup = fade;
+			g.collapse_v = 0.0f;
+			g.collapse_h = 0.0f;
+			g.flash = fade;
 		}
-	} else {
-		*warmup = 0.0f;
-		*cv = 1.0f;
-		*ch = 1.0f;
-		*flash = 0.0f;
 	}
+	return g;
 }
 
 /* ---- OBS source callbacks -------------------------------------------- */
@@ -249,18 +249,21 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->field_strength = (float)obs_data_get_double(s, "field_strength");
 	f->noise_floor = (float)obs_data_get_double(s, "noise_floor");
 	f->yc_mode = (int)obs_data_get_int(s, "yc_mode");
-	f->chroma_band_i = (float)obs_data_get_double(s, "chroma_band_i");
-	f->chroma_band_q = (float)obs_data_get_double(s, "chroma_band_q");
+	f->cutoff_i = (float)(obs_data_get_double(s, "chroma_band_i") * MHZ_TO_NORM);
+	f->cutoff_q = (float)(obs_data_get_double(s, "chroma_band_q") * MHZ_TO_NORM);
 	f->enc_chroma_gain = (float)obs_data_get_double(s, "enc_chroma_gain");
 	f->aspect_mode = (int)obs_data_get_int(s, "aspect_mode");
 	f->screen_aspect = (int)obs_data_get_int(s, "screen_aspect");
 	f->powered = obs_data_get_bool(s, "power");
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
-	f->if_bandwidth = (float)obs_data_get_double(s, "if_bandwidth");
-	f->luma_bandwidth = (float)obs_data_get_double(s, "luma_bandwidth");
-	f->chroma_gain = (float)obs_data_get_double(s, "chroma_gain");
-	f->color_killer = obs_data_get_bool(s, "color_killer");
+	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
+	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
+	/* The colour killer is a plain gate, so fold it in here rather than
+	 * re-testing it on every pass. */
+	f->chroma_gain = obs_data_get_bool(s, "color_killer")
+				 ? 0.0f
+				 : (float)obs_data_get_double(s, "chroma_gain");
 	f->chroma_drift = (float)obs_data_get_double(s, "chroma_drift");
 	f->contrast = (float)obs_data_get_double(s, "contrast");
 	f->brightness = (float)obs_data_get_double(s, "brightness");
@@ -273,17 +276,19 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->vignette = (float)obs_data_get_double(s, "vignette");
 	f->overscan = (float)obs_data_get_double(s, "overscan");
 
-	f->glitch_enable = obs_data_get_bool(s, "glitch_enable");
-	f->ghost_gain = (float)obs_data_get_double(s, "ghost_gain");
-	f->ghost_delay = (float)obs_data_get_double(s, "ghost_delay");
-	f->v_roll_speed = (float)obs_data_get_double(s, "v_roll_speed");
-	f->v_bar = (float)obs_data_get_double(s, "v_bar");
-	f->h_jitter = (float)obs_data_get_double(s, "h_jitter");
-	f->flagging = (float)obs_data_get_double(s, "flagging");
-	f->head_switch = (float)obs_data_get_double(s, "head_switch");
-	f->dropout = (float)obs_data_get_double(s, "dropout");
-	f->beat_gain = (float)obs_data_get_double(s, "beat_gain");
-	f->beat_freq = (float)obs_data_get_double(s, "beat_freq");
+	/* Every glitch is gated by the group toggle, so apply the gate once here
+	 * and let the render path just read the values. */
+	const bool glitch = obs_data_get_bool(s, "glitch_enable");
+	f->ghost_gain = glitch ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
+	f->ghost_delay = glitch ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
+	f->v_roll_speed = glitch ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
+	f->v_bar = glitch ? (float)obs_data_get_double(s, "v_bar") : 0.0f;
+	f->h_jitter = glitch ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
+	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
+	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
+	f->dropout = glitch ? (float)obs_data_get_double(s, "dropout") : 0.0f;
+	f->beat_gain = glitch ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
+	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
@@ -383,22 +388,20 @@ static void ntsc_destroy(void *data)
 }
 
 /* Ensure a texrender exists with the requested format. */
-static gs_texrender_t *ensure_tr(gs_texrender_t **tr, enum gs_color_format fmt)
+static void ensure_tr(gs_texrender_t **tr, enum gs_color_format fmt)
 {
 	if (!*tr)
 		*tr = gs_texrender_create(fmt, GS_ZS_NONE);
-	return *tr;
 }
 
-/* Render one full-screen technique into a texrender; returns its texture. */
-static gs_texture_t *run_pass(gs_effect_t *e, gs_texrender_t *tr, uint32_t w, uint32_t h,
-			      const char *tech, gs_texture_t *img)
+/* Start drawing into a texrender with the pipeline state every pass expects. */
+static bool target_begin(gs_texrender_t *tr, uint32_t w, uint32_t h)
 {
 	if (!tr)
-		return NULL;
+		return false;
 	gs_texrender_reset(tr);
 	if (!gs_texrender_begin(tr, w, h))
-		return NULL;
+		return false;
 
 	struct vec4 clear;
 	vec4_zero(&clear);
@@ -407,32 +410,53 @@ static gs_texture_t *run_pass(gs_effect_t *e, gs_texrender_t *tr, uint32_t w, ui
 
 	gs_blend_state_push();
 	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
+	return true;
+}
 
+static void target_end(gs_texrender_t *tr)
+{
+	gs_blend_state_pop();
+	gs_texrender_end(tr);
+}
+
+static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy);
+
+/* Render one full-screen technique into a texrender; returns its texture.
+ * Applying the parameters in here - rather than at each call site - is what
+ * makes the libobs quirk described on apply_params() impossible to trip over. */
+static gs_texture_t *run_pass(struct ntsc_snow *f, gs_effect_t *e, gs_texrender_t *tr, uint32_t w, uint32_t h,
+			      const char *tech, gs_texture_t *img, uint32_t cx, uint32_t cy)
+{
+	if (!target_begin(tr, w, h))
+		return NULL;
+
+	apply_params(f, e, cx, cy);
 	set_tex(e, "image", img);
 	while (gs_effect_loop(e, tech))
 		gs_draw_sprite(img, 0, w, h);
 
-	gs_blend_state_pop();
-	gs_texrender_end(tr);
+	target_end(tr);
 	return gs_texrender_get_texture(tr);
 }
 
 /* Assign every scalar effect parameter. libobs clears all parameter values at
  * the end of each technique (gs_technique_end -> da_resize(cur_val, 0)), so
- * this MUST be called again immediately before every pass, otherwise later
- * passes draw with unset parameters and the D3D11 backend skips them
- * ("Not all shader parameters were set"). */
-static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy, float luma_cut,
-			 float field_base_phase)
+ * this has to run again before every pass or the D3D11 backend silently skips
+ * the draw ("Not all shader parameters were set"). run_pass() is the only
+ * caller precisely so that nobody has to remember this. */
+static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy)
 {
+	/* Fields alternate 0,PI,0,PI over the four-field sequence. */
+	const float field_base_phase = (f->field_counter & 1u) ? (float)NS_PI : 0.0f;
+
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
 	set_f(e, "burst_phase", (float)BURST_PHASE_RAD);
 	set_f(e, "field_base_phase", field_base_phase);
 	/* Encode */
-	set_f(e, "luma_cutoff", luma_cut);
-	set_f(e, "cutoff_i", (float)(f->chroma_band_i * 1.0e6 / SAMPLE_RATE_HZ));
-	set_f(e, "cutoff_q", (float)(f->chroma_band_q * 1.0e6 / SAMPLE_RATE_HZ));
+	set_f(e, "luma_cutoff", f->luma_cutoff);
+	set_f(e, "cutoff_i", f->cutoff_i);
+	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
@@ -442,14 +466,14 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "screen_aspect", scr_aspect);
 	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
-	set_f(e, "if_cutoff", (float)(f->if_bandwidth * 1.0e6 * 0.5 / SAMPLE_RATE_HZ));
+	set_f(e, "if_cutoff", f->if_cutoff);
 	set_f(e, "field_strength", f->field_strength);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
 	set_f(e, "snow_level", f->agc_level);
 	/* Decode */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
-	set_f(e, "chroma_gain", f->color_killer ? 0.0f : f->chroma_gain);
+	set_f(e, "chroma_gain", f->chroma_gain);
 	set_f(e, "chroma_phase", (float)f->chroma_phase_acc);
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
@@ -457,7 +481,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	/* Display */
 	set_f(e, "active_lines", (float)ACTIVE_LINES);
 	set_f(e, "interlace_on", f->interlace ? 1.0f : 0.0f);
-	set_f(e, "frame_parity", (float)(f->field_index4 & 1));
+	set_f(e, "frame_parity", (float)(f->field_counter & 1u));
 	set_f(e, "persistence", f->persistence);
 	set_f(e, "spot_v", f->spot_v);
 	set_f(e, "spot_h", f->spot_h);
@@ -467,21 +491,21 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "overscan", f->overscan);
 	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
 
-	/* Glitches. When the group is off only the momentary burst contributes,
-	 * so the dock button / hotkey still works from a clean picture. */
-	const float on = f->glitch_enable ? 1.0f : 0.0f;
+	/* Glitches. The steady-state values were already gated by glitch_enable in
+	 * ntsc_update(); the momentary burst adds on top, so the dock button and
+	 * the hotkey still work from a clean picture. */
 	const float b = f->burst;
-	set_f(e, "ghost_gain", on * f->ghost_gain);
-	set_f(e, "ghost_delay", on * f->ghost_delay);
-	set_f(e, "beat_gain", on * f->beat_gain);
-	set_f(e, "beat_norm", (float)(f->beat_freq * 1.0e6 / SAMPLE_RATE_HZ));
+	set_f(e, "ghost_gain", f->ghost_gain);
+	set_f(e, "ghost_delay", f->ghost_delay);
+	set_f(e, "beat_gain", f->beat_gain);
+	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
-	set_f(e, "v_bar", (on * f->v_bar > 0.0f || b > 0.0f) ? (on * f->v_bar + b * 12.0f) : 0.0f);
-	set_f(e, "h_jitter", clampf(on * f->h_jitter + b * 0.8f, 0.0f, 2.0f));
-	set_f(e, "flagging", clampf(on * f->flagging + b * 0.6f, 0.0f, 2.0f));
-	set_f(e, "head_switch", clampf(on * f->head_switch + b * 0.5f, 0.0f, 2.0f));
-	set_f(e, "dropout", clampf(on * f->dropout + b * 0.6f, 0.0f, 2.0f));
+	set_f(e, "v_bar", f->v_bar + b * 12.0f);
+	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
+	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
+	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
+	set_f(e, "dropout", clampf(f->dropout + b * 0.6f, 0.0f, 2.0f));
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;
@@ -489,6 +513,13 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "degauss_conv", dg * 0.010f);
 	set_f(e, "degauss_tint", dg);
 	set_f(e, "degauss_phase", (float)f->degauss_phase);
+
+	/* Power on/off envelope */
+	struct power_gfx g = power_uniforms(f);
+	set_f(e, "warmup", g.warmup);
+	set_f(e, "collapse_v", g.collapse_v);
+	set_f(e, "collapse_h", g.collapse_h);
+	set_f(e, "flash", g.flash);
 }
 
 static void ntsc_render(void *data, gs_effect_t *unused)
@@ -516,7 +547,6 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		dt = 0.016f;
 	f->last_time = now;
 	f->field_counter++;
-	f->field_index4 = (f->field_index4 + 1) & 3;
 	f->chroma_phase_acc = fmod(f->chroma_phase_acc + (double)f->chroma_drift * dt, 2.0 * NS_PI);
 	power_advance(f, dt);
 
@@ -529,7 +559,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	}
 	/* The burst kicks the vertical hold hard so the picture visibly tumbles
 	 * (several screens over the burst) before it re-locks. */
-	float roll_speed = (f->glitch_enable ? f->v_roll_speed : 0.0f) + f->burst * 6.0f;
+	float roll_speed = f->v_roll_speed + f->burst * 6.0f;
 	if (roll_speed != 0.0f) {
 		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt,
 				     (double)ACTIVE_LINES);
@@ -560,24 +590,13 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 	/* 1) capture the filter input into a texture */
 	ensure_tr(&f->input, GS_RGBA);
-	gs_texrender_reset(f->input);
-	if (!gs_texrender_begin(f->input, cx, cy)) {
+	if (!target_begin(f->input, cx, cy)) {
 		obs_source_skip_video_filter(f->source);
 		return;
 	}
-	struct vec4 clear;
-	vec4_zero(&clear);
-	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
-	gs_ortho(0.0f, (float)cx, 0.0f, (float)cy, -100.0f, 100.0f);
-	gs_blend_state_push();
-	gs_blend_function(GS_BLEND_ONE, GS_BLEND_ZERO);
 	obs_source_video_render(target);
-	gs_blend_state_pop();
-	gs_texrender_end(f->input);
+	target_end(f->input);
 	gs_texture_t *input_tex = gs_texrender_get_texture(f->input);
-
-	const float luma_cut = (float)(f->luma_bandwidth * 1.0e6 / SAMPLE_RATE_HZ);
-	const float field_base_phase = (float)fmod(NS_PI * (double)f->field_index4, 2.0 * NS_PI);
 
 	ensure_tr(&f->composite, GS_RGBA16F);
 	ensure_tr(&f->detector, GS_RGBA16F);
@@ -586,18 +605,13 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	ensure_tr(&f->display[0], GS_RGBA);
 	ensure_tr(&f->display[1], GS_RGBA);
 
-	/* libobs clears every effect parameter at the end of each technique, so
-	 * apply_params() must run again before every single pass. */
-
-	/* 2) Encode -> 3) Detect -> 4) Decode */
-	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
-	gs_texture_t *comp = run_pass(e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex);
-
-	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
-	gs_texture_t *det = run_pass(e, f->detector, FIELD_W, FIELD_H, "Detect", comp);
-
-	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
-	gs_texture_t *field_cur = run_pass(e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det);
+	/* 2) Encode -> 3) Detect -> 4) Decode. run_pass() applies the parameters
+	 * itself, which is what keeps the libobs clear-on-technique-end quirk
+	 * from being a rule anyone has to remember. */
+	gs_texture_t *comp = run_pass(f, e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex, cx, cy);
+	gs_texture_t *det = run_pass(f, e, f->detector, FIELD_W, FIELD_H, "Detect", comp, cx, cy);
+	gs_texture_t *field_cur =
+		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
 	/* 5) Display: interlaced CRT presentation into the display buffer */
 	gs_texture_t *field_prev = gs_texrender_get_texture(f->field[1 - f->field_idx]);
@@ -607,22 +621,16 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	if (!disp_prev)
 		disp_prev = field_cur;
 
-	float warmup, cv, ch, flash;
-	power_uniforms(f, &warmup, &cv, &ch, &flash);
-
-	apply_params(f, e, cx, cy, luma_cut, field_base_phase);
-	set_f(e, "warmup", warmup);
-	set_f(e, "collapse_v", cv);
-	set_f(e, "collapse_h", ch);
-	set_f(e, "flash", flash);
 	set_tex(e, "field_prev", field_prev);
 	set_tex(e, "display_prev", disp_prev);
-	gs_texture_t *display_cur = run_pass(e, f->display[f->display_idx], cx, cy, "Display", field_cur);
+	gs_texture_t *display_cur =
+		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
 	/* 6) blit the final frame to the actual filter output */
 	if (display_cur) {
-		set_tex(e, "image", display_cur);
-		while (gs_effect_loop(e, "Draw"))
+		gs_effect_t *blit = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+		set_tex(blit, "image", display_cur);
+		while (gs_effect_loop(blit, "Draw"))
 			gs_draw_sprite(display_cur, 0, cx, cy);
 	}
 

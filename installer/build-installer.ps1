@@ -44,8 +44,20 @@ $dll = Join-Path $prefix 'ntsc-snow\bin\64bit\ntsc-snow.dll'
 if (-not (Test-Path $dll)) { throw "expected payload not found: $dll" }
 
 # --- locate ISCC.exe (Inno Setup compiler) -------------------------------
-# Inno Setup is a 32-bit app, so its uninstall entry lives under WOW6432Node.
+# Cheap probes first: a default install is found by nine Test-Path calls,
+# whereas the registry sweep reads several hundred keys. Inno Setup is a 32-bit
+# app, so its uninstall entry lives under WOW6432Node.
 function Find-ISCC {
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, "$env:LOCALAPPDATA\Programs")) {
+        if (-not $base) { continue }
+        foreach ($ver in @('Inno Setup 6', 'Inno Setup 5', 'Inno Setup')) {
+            $p = Join-Path $base (Join-Path $ver 'ISCC.exe')
+            if (Test-Path $p) { return $p }
+        }
+    }
+    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+
     $roots = @(
         'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
         'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
@@ -62,24 +74,13 @@ function Find-ISCC {
             }
         }
     }
-    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, "$env:LOCALAPPDATA\Programs")) {
-        if (-not $base) { continue }
-        foreach ($ver in @('Inno Setup 6', 'Inno Setup 5', 'Inno Setup')) {
-            $p = Join-Path $base (Join-Path $ver 'ISCC.exe')
-            if (Test-Path $p) { return $p }
-        }
-    }
-    $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
     return $null
 }
 
-if ($ISCC -and (Test-Path $ISCC)) {
-    $iscc = $ISCC
-} else {
-    $iscc = Find-ISCC
-}
-if (-not $iscc) {
+# NOTE: PowerShell variable names are case-insensitive, so this must not be
+# called $iscc - that would be the -ISCC parameter itself.
+$isccExe = if ($ISCC -and (Test-Path $ISCC)) { $ISCC } else { Find-ISCC }
+if (-not $isccExe) {
     Write-Host ""
     Write-Warning "Inno Setup compiler (ISCC.exe) not found automatically."
     Write-Host    "  If Inno Setup is installed, pass its path explicitly, e.g.:" -ForegroundColor Yellow
@@ -88,11 +89,11 @@ if (-not $iscc) {
     Write-Host    "  Or install the free Inno Setup 6: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
     exit 1
 }
-Write-Host "==> ISCC: $iscc" -ForegroundColor Green
+Write-Host "==> ISCC: $isccExe" -ForegroundColor Green
 
 # --- compile installer ----------------------------------------------------
 $iss = Join-Path $PSScriptRoot 'ntsc-snow.iss'
-& $iscc "/DAppVersion=$version" $iss
+& $isccExe "/DAppVersion=$version" $iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
 $out = Join-Path $Root "release\ntsc-snow-$version-windows-x64.exe"

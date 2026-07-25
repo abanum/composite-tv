@@ -46,8 +46,12 @@ struct ntsc_audio {
 
 	/* derived from the sample rate */
 	double sample_rate;
-	float a_deemph; /* de-emphasis high-pass coefficient */
-	float alpha_lp; /* one-pole low-pass coefficient    */
+	float a_deemph;   /* de-emphasis high-pass coefficient */
+	float alpha_lp;   /* one-pole low-pass coefficient     */
+	float g_ramp;     /* power-gain ramp coefficient       */
+	double ic_dphase; /* intercarrier phase step           */
+	double dg_dphase; /* degauss hum phase step            */
+	float dg_decay;   /* degauss envelope step per sample  */
 
 	/* per-channel filter state */
 	float hp_x1[NA_MAX_CH];
@@ -110,6 +114,10 @@ static void na_recalc_coeffs(struct ntsc_audio *f)
 	f->a_deemph = (float)(DEEMPHASIS_TAU_S / (DEEMPHASIS_TAU_S + dt));
 	double rc = 1.0 / (NA_TWO_PI * AUDIO_LPF_HZ);
 	f->alpha_lp = (float)(dt / (rc + dt));
+	f->g_ramp = (float)(dt / (0.03 + dt));            /* ~30 ms power ramp   */
+	f->ic_dphase = NA_TWO_PI * INTERCARRIER_HZ / f->sample_rate;
+	f->dg_dphase = NA_TWO_PI * 55.0 / f->sample_rate; /* degauss hum, 55 Hz  */
+	f->dg_decay = (float)(dt / 0.35);                 /* boing decays in .35s */
 }
 
 /* ---- OBS source callbacks -------------------------------------------- */
@@ -188,25 +196,21 @@ static struct obs_audio_data *na_filter_audio(void *data, struct obs_audio_data 
 		return audio;
 
 	const float duck = smoothstep01(0.0f, 0.35f, f->field_strength);
-	const float noise_scale = 1.0f + (0.12f - 1.0f) * duck; /* lerp(1, 0.12, duck) */
+	const float noise_scale = 1.0f - 0.88f * duck; /* full hiss -> 12% with picture */
 	const float vol = f->volume;
 	const float noise_gain = noise_scale * vol * 0.6f;
 	const float ic_gain = (f->intercarrier + duck * 0.5f) * 0.08f * vol;
 	const float target = f->powered ? 1.0f : 0.0f;
 
-	const double dphase = NA_TWO_PI * INTERCARRIER_HZ / f->sample_rate;
 	const float a = f->a_deemph;
 	const float alpha = f->alpha_lp;
-	const double dt = 1.0 / f->sample_rate;
-	const float gcoef = (float)(dt / (0.03 + dt)); /* ~30 ms power ramp */
-
-	/* Degauss "boing": a low hum at 55 Hz with its octave, decaying fast. */
-	const double dg_dphase = NA_TWO_PI * 55.0 / f->sample_rate;
-	const float dg_decay = (float)(dt / 0.35);
+	const float gcoef = f->g_ramp;
+	const double dg_dphase = f->dg_dphase;
+	const float dg_decay = f->dg_decay;
 
 	for (uint32_t i = 0; i < frames; i++) {
 		float ic = (float)sin(f->ic_phase);
-		f->ic_phase += dphase;
+		f->ic_phase += f->ic_dphase;
 		if (f->ic_phase > NA_TWO_PI)
 			f->ic_phase -= NA_TWO_PI;
 

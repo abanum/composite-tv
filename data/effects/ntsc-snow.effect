@@ -101,6 +101,10 @@ uniform float flash;              // discharge flash amount
 #define LUMA_R 8
 #define CHROMA_R 12
 
+/* Composite storage encoding shared by the encoder and everything downstream */
+#define STORE_BIAS 0.5
+#define STORE_SCALE 0.375
+
 sampler_state pointClamp {
 	Filter    = Point;
 	AddressU  = Clamp;
@@ -136,6 +140,41 @@ float hamming(int k, int radius)
 	return 0.54 + 0.46 * cos(PI * (float)k / (float)(radius + 1));
 }
 
+// One tap of a windowed-sinc low-pass. Every FIR in this effect uses it.
+float lpfTap(int k, float fcn, int radius)
+{
+	return 2.0 * fcn * sinc(2.0 * fcn * (float)k) * hamming(k, radius);
+}
+
+// Sample index and clamped scan line for a field-space uv.
+int2 fieldCoord(float2 uv)
+{
+	return int2((int)floor(uv.x * field_size.x),
+		    clamp((int)floor(uv.y * field_size.y), 0, (int)field_size.y - 1));
+}
+
+// Subcarrier reference phase at the head of a scan line. Encode and decode
+// must agree exactly, so both go through this.
+float linePhaseOf(int ln)
+{
+	return field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
+}
+
+// The composite field is stored as amplitude * STORE_SCALE + STORE_BIAS so it
+// fits an unsigned texture; these two read it back raw and in signal units.
+float compAt(int n, int ln)
+{
+	int nx = clamp(n, 0, (int)field_size.x - 1);
+	int ny = clamp(ln, 0, (int)field_size.y - 1);
+	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ny + 0.5) / field_size.y);
+	return image.Sample(pointClamp, uv).r;
+}
+
+float compositeAt(int n, int ln)
+{
+	return (compAt(n, ln) - STORE_BIAS) / STORE_SCALE;
+}
+
 //============================================================================
 // Encode : RGB -> composite
 //============================================================================
@@ -148,28 +187,39 @@ float3 rgb2yiq(float3 c)
 		0.211 * c.r - 0.523 * c.g + 0.312 * c.b);
 }
 
-float3 sampleRGB(float sx, float row)
+// Letterbox-aware source sampling. The vertical half of the transform depends
+// only on the scan line, so the caller resolves it once and passes the result
+// in as rowY / rowOut instead of redoing it for every FIR tap.
+float3 sampleRGB(float sx, float rowY, float scale, float rowOut)
 {
-	float targetAspect = screen_aspect;
-	float2 uv = float2(sx, row);
+	float ux = sx;
 	if (aspect_mode < 0.5) {
-		float scale = input_aspect / targetAspect;
-		if (scale > 1.0)
-			uv.y = (uv.y - 0.5) * scale + 0.5;
-		else
-			uv.x = (uv.x - 0.5) / scale + 0.5;
-		if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+		if (scale <= 1.0)
+			ux = (sx - 0.5) / scale + 0.5;
+		if (rowOut > 0.5 || ux < 0.0 || ux > 1.0)
 			return float3(0.0, 0.0, 0.0);
 	}
-	return image.Sample(linearClamp, uv).rgb;
+	return image.Sample(linearClamp, float2(ux, rowY)).rgb;
 }
 
 float4 PSEncode(VertData v) : TARGET
 {
-	int   n    = (int)floor(v.uv.x * field_size.x);
-	int   ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
-	float du   = 1.0 / field_size.x;
-	float row  = ((float)ln + 0.5) / field_size.y;
+	int2  fc  = fieldCoord(v.uv);
+	int   n   = fc.x;
+	int   ln  = fc.y;
+	float du  = 1.0 / field_size.x;
+	float row = ((float)ln + 0.5) / field_size.y;
+
+	// Resolve the vertical half of the letterbox fit once for this scan line.
+	float scale = input_aspect / screen_aspect;
+	float rowY = row;
+	float rowOut = 0.0;
+	if (aspect_mode < 0.5) {
+		if (scale > 1.0)
+			rowY = (row - 0.5) * scale + 0.5;
+		if (rowY < 0.0 || rowY > 1.0)
+			rowOut = 1.0;
+	}
 
 	float y = 0.0;
 	float ci = 0.0;
@@ -180,18 +230,17 @@ float4 PSEncode(VertData v) : TARGET
 
 	for (int k = -R_Q; k <= R_Q; ++k) {
 		float sx = v.uv.x + (float)k * du;
-		float3 yiq = rgb2yiq(sampleRGB(sx, row));
-		float fk = (float)k;
+		float3 yiq = rgb2yiq(sampleRGB(sx, rowY, scale, rowOut));
 
-		float wq = 2.0 * cutoff_q * sinc(2.0 * cutoff_q * fk) * hamming(k, R_Q);
+		float wq = lpfTap(k, cutoff_q, R_Q);
 		cq += yiq.z * wq; nq += wq;
 
 		if (k >= -R_I && k <= R_I) {
-			float wi = 2.0 * cutoff_i * sinc(2.0 * cutoff_i * fk) * hamming(k, R_I);
+			float wi = lpfTap(k, cutoff_i, R_I);
 			ci += yiq.y * wi; ni += wi;
 		}
 		if (k >= -R_Y && k <= R_Y) {
-			float wy = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * fk) * hamming(k, R_Y);
+			float wy = lpfTap(k, luma_cutoff, R_Y);
 			y += yiq.x * wy; ny += wy;
 		}
 	}
@@ -199,8 +248,7 @@ float4 PSEncode(VertData v) : TARGET
 	ci /= max(ni, 1.0e-6);
 	cq /= max(nq, 1.0e-6);
 
-	float linePhase = field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
-	float phase = 0.5 * PI * (float)n + linePhase + burst_phase;
+	float phase = 0.5 * PI * (float)n + linePhaseOf(ln) + burst_phase;
 	float composite = y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
 
 	// Interfering carrier (herringbone). Phase runs off the absolute sample
@@ -211,7 +259,7 @@ float4 PSEncode(VertData v) : TARGET
 		composite += beat_gain * sin(2.0 * PI * beat_norm * totalN + beat_phase);
 	}
 
-	float stored = composite * 0.375 + 0.5;
+	float stored = composite * STORE_SCALE + STORE_BIAS;
 	return float4(clamp(stored, 0.0, 1.0), y, 0.0, 1.0);
 }
 
@@ -241,24 +289,11 @@ float2 noiseIQ(int ln, int n)
 	return clamp(float2(r * cos(a), r * sin(a)), -4.0, 4.0);
 }
 
-float lpfTap(int k, float fcn, int radius)
-{
-	float fk = (float)k;
-	return 2.0 * fcn * sinc(2.0 * fcn * fk) * hamming(k, radius);
-}
-
-// Composite amplitude at an arbitrary sample of the current line.
-float compositeAt(int n, int ln)
-{
-	int nx = clamp(n, 0, (int)field_size.x - 1);
-	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
-	return (image.Sample(pointClamp, uv).r - 0.5) / 0.375;
-}
-
 float4 PSDetect(VertData v) : TARGET
 {
-	int n    = (int)floor(v.uv.x * field_size.x);
-	int ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	int2 fc = fieldCoord(v.uv);
+	int  n  = fc.x;
+	int  ln = fc.y;
 
 	float2 noise = float2(0.0, 0.0);
 	float norm = 0.0;
@@ -269,9 +304,7 @@ float4 PSDetect(VertData v) : TARGET
 	}
 	noise /= sqrt(max(norm, 1.0e-6));
 
-	float2 base = float2(((float)n + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
-	float stored = image.Sample(pointClamp, base).r;
-	float composite = (stored - 0.5) / 0.375;
+	float composite = compositeAt(n, ln);
 
 	// Multipath ghost: a delayed, attenuated copy of the same carrier. Added
 	// before Y/C separation, so the ghost carries chroma and smears colour
@@ -297,58 +330,62 @@ float4 PSDetect(VertData v) : TARGET
 // Decode : Y/C separation + synchronous chroma demodulation -> RGB
 //============================================================================
 
-float compAt(int n, int ln)
-{
-	int nx = clamp(n, 0, (int)field_size.x - 1);
-	int ny = clamp(ln, 0, (int)field_size.y - 1);
-	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ny + 0.5) / field_size.y);
-	return image.Sample(pointClamp, uv).r;
-}
-
 float4 PSDecode(VertData v) : TARGET
 {
-	int n    = (int)floor(v.uv.x * field_size.x);
-	int ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	int2 fc = fieldCoord(v.uv);
+	int  n  = fc.x;
+	int  ln = fc.y;
 
-	// --- luminance (Y/C separation) ---
-	float luma = 0.0;
-	float lnorm = 0.0;
-	for (int k = -LUMA_R; k <= LUMA_R; ++k) {
-		float wgt = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * (float)k) * hamming(k, LUMA_R);
-		float s;
-		if (yc_mode < 0.5)
-			s = compAt(n + k, ln);
-		else if (yc_mode < 1.5)
-			s = 0.5 * (compAt(n + k, ln) + compAt(n + k, ln - 1));
-		else
-			s = 0.25 * (compAt(n + k, ln - 1) + 2.0 * compAt(n + k, ln) + compAt(n + k, ln + 1));
-		luma += s * wgt; lnorm += wgt;
-	}
-	luma /= max(lnorm, 1.0e-6);
-
-	// --- chrominance (synchronous detection + post LPF) ---
 	// The local-oscillator drift (chroma_phase) only rotates the hue in the
 	// no-signal limit (snow). With any field strength the receiver locks to
 	// the colour burst, so gate the drift out as soon as a picture appears.
 	float cyc = chroma_phase * (1.0 - smoothstep(0.0, 0.08, field_strength));
-	float linePhase = field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
+	float linePhase = linePhaseOf(ln);
+
+	// Luma and chroma read the same texels, so one loop feeds both: the wider
+	// chroma FIR drives it and the luma FIR takes the inner taps. Accumulation
+	// order per filter is unchanged.
+	float luma = 0.0;
+	float lnorm = 0.0;
 	float ci = 0.0;
 	float cq = 0.0;
 	float cnorm = 0.0;
+
 	for (int k = -CHROMA_R; k <= CHROMA_R; ++k) {
-		float wgt = 2.0 * chroma_cutoff * sinc(2.0 * chroma_cutoff * (float)k) * hamming(k, CHROMA_R);
-		float s;
-		if (yc_mode < 0.5)
-			s = compAt(n + k, ln);
-		else if (yc_mode < 1.5)
-			s = 0.5 * (compAt(n + k, ln) - compAt(n + k, ln - 1));
-		else
-			s = compAt(n + k, ln) - 0.5 * (compAt(n + k, ln - 1) + compAt(n + k, ln + 1));
+		float c0 = compAt(n + k, ln);
+		float cm1 = 0.0;
+		float cp1 = 0.0;
+		if (yc_mode >= 0.5)
+			cm1 = compAt(n + k, ln - 1);
+		if (yc_mode >= 1.5)
+			cp1 = compAt(n + k, ln + 1);
+
+		// sl keeps C out of the luma, sc keeps Y out of the chroma.
+		float sl, sc;
+		if (yc_mode < 0.5) {
+			sl = c0;
+			sc = c0;
+		} else if (yc_mode < 1.5) {
+			sl = 0.5 * (c0 + cm1);
+			sc = 0.5 * (c0 - cm1);
+		} else {
+			sl = 0.25 * (cm1 + 2.0 * c0 + cp1);
+			sc = c0 - 0.5 * (cm1 + cp1);
+		}
+
+		if (k >= -LUMA_R && k <= LUMA_R) {
+			float wl = lpfTap(k, luma_cutoff, LUMA_R);
+			luma += sl * wl;
+			lnorm += wl;
+		}
+
+		float wc = lpfTap(k, chroma_cutoff, CHROMA_R);
 		float ph = 0.5 * PI * (float)(n + k) + linePhase + burst_phase + cyc;
-		ci += s * cos(ph) * wgt;
-		cq += s * sin(ph) * wgt;
-		cnorm += wgt;
+		ci += sc * cos(ph) * wc;
+		cq += sc * sin(ph) * wc;
+		cnorm += wc;
 	}
+	luma /= max(lnorm, 1.0e-6);
 	float inv = 2.0 / max(cnorm, 1.0e-6);
 	ci *= inv * chroma_gain;
 	cq *= inv * chroma_gain;
@@ -402,23 +439,22 @@ float lineShift(int li)
 // Sample a scan ln, choosing the current or previous field for the weave.
 float3 sampleLine(int lineIndex, float x)
 {
-	float p = fmod((float)lineIndex, 2.0);
-	float fp = frame_parity;
-	float samePar = (abs(p - fp) < 0.5) ? 1.0 : 0.0;
-	float useCur = (interlace_on < 0.5 || samePar > 0.5) ? 1.0 : 0.0;
+	bool useCur = (interlace_on < 0.5) ||
+		      (abs(fmod((float)lineIndex, 2.0) - frame_parity) < 0.5);
 	float row = (floor((float)lineIndex * 0.5) + 0.5) / field_size.y;
 	float dx = spot_h * 0.5 / field_size.x;
 	x += lineShift(lineIndex);
 
-	float3 ca = image.Sample(linearClamp, float2(x - dx, row)).rgb;
-	float3 cb = image.Sample(linearClamp, float2(x + dx, row)).rgb;
-	float3 cur = (ca + cb) * 0.5;
-
-	float3 pa = field_prev.Sample(linearClamp, float2(x - dx, row)).rgb;
-	float3 pb = field_prev.Sample(linearClamp, float2(x + dx, row)).rgb;
-	float3 prev = (pa + pb) * 0.5;
-
-	float3 outCol = lerp(prev, cur, useCur);
+	float3 outCol;
+	if (useCur) {
+		float3 ca = image.Sample(linearClamp, float2(x - dx, row)).rgb;
+		float3 cb = image.Sample(linearClamp, float2(x + dx, row)).rgb;
+		outCol = (ca + cb) * 0.5;
+	} else {
+		float3 pa = field_prev.Sample(linearClamp, float2(x - dx, row)).rgb;
+		float3 pb = field_prev.Sample(linearClamp, float2(x + dx, row)).rgb;
+		outCol = (pa + pb) * 0.5;
+	}
 
 	// Degauss misconvergence: the residual field pulls the red and blue beams
 	// apart, and worse away from the centre - just like a real purity error.
@@ -493,7 +529,7 @@ float4 PSDisplay(VertData v) : TARGET
 
 	float visibility = scanline * smoothstep(2.2, 3.0, pixels_per_line);
 	float phase = frac(lineF);
-	col *= 1.0 - visibility * (0.5 - 0.5 * cos(6.2831853 * phase));
+	col *= 1.0 - visibility * (0.5 - 0.5 * cos(2.0 * PI *phase));
 
 	// Tape dropout: short bright streaks on random lines.
 	if (dropout > 0.0) {
@@ -512,8 +548,11 @@ float4 PSDisplay(VertData v) : TARGET
 		col = float3(0.03, 0.03, 0.03) + g * 0.06;
 	}
 
-	float3 prev = display_prev.Sample(linearClamp, v.uv).rgb;
-	col = max(col, prev * persistence);
+	// col is non-negative, so with no persistence the max() cannot change it.
+	if (persistence > 0.0) {
+		float3 prev = display_prev.Sample(linearClamp, v.uv).rgb;
+		col = max(col, prev * persistence);
+	}
 
 	float2 vg = suv * 2.0 - 1.0;
 	float vig = 1.0 - vignette * dot(vg, vg) * 0.55;
@@ -524,7 +563,7 @@ float4 PSDisplay(VertData v) : TARGET
 		float2 q = suv * 3.0;
 		float a = sin(q.x * 2.1 + degauss_phase) + sin(q.y * 1.7 - degauss_phase * 1.3) +
 			  sin((q.x + q.y) * 1.3 + degauss_phase * 0.7);
-		float3 tint = 0.5 + 0.5 * cos(6.2831853 * (a * 0.15 + float3(0.0, 0.33, 0.67)));
+		float3 tint = 0.5 + 0.5 * cos(2.0 * PI *(a * 0.15 + float3(0.0, 0.33, 0.67)));
 		float edge = 0.35 + dot(vg, vg) * 0.65;
 		col = lerp(col, col * tint * 1.6, saturate(degauss_tint * edge));
 	}
@@ -541,14 +580,8 @@ float4 PSDisplay(VertData v) : TARGET
 	return float4(col * inScreen, 1.0);
 }
 
-//============================================================================
-// Draw : passthrough blit of the final frame to the screen
-//============================================================================
-
-float4 PSDraw(VertData v) : TARGET
-{
-	return image.Sample(linearClamp, v.uv);
-}
+// The final blit to the filter output uses libobs' own default effect, so
+// there is no passthrough technique here.
 
 technique Encode
 {
@@ -583,14 +616,5 @@ technique Display
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSDisplay(v);
-	}
-}
-
-technique Draw
-{
-	pass
-	{
-		vertex_shader = VSDefault(v);
-		pixel_shader  = PSDraw(v);
 	}
 }
