@@ -66,6 +66,14 @@ uniform float pixels_per_line;    // output pixels per active line
 
 #define PI 3.141592653589793
 
+/* FIR tap radii (compile-time constants; kept as #define for the effect parser) */
+#define R_Y 8
+#define R_I 14
+#define R_Q 26
+#define TAP_RADIUS 6
+#define LUMA_R 8
+#define CHROMA_R 12
+
 sampler_state pointClamp {
 	Filter    = Point;
 	AddressU  = Clamp;
@@ -136,12 +144,12 @@ float4 PSEncode(VertData v) : TARGET
 	float du   = 1.0 / field_size.x;
 	float row  = ((float)line + 0.5) / field_size.y;
 
-	const int R_Y = 8;
-	const int R_I = 14;
-	const int R_Q = 26;
-
-	float y = 0.0, ci = 0.0, cq = 0.0;
-	float ny = 0.0, ni = 0.0, nq = 0.0;
+	float y = 0.0;
+	float ci = 0.0;
+	float cq = 0.0;
+	float ny = 0.0;
+	float ni = 0.0;
+	float nq = 0.0;
 
 	for (int k = -R_Q; k <= R_Q; ++k) {
 		float sx = v.uv.x + (float)k * du;
@@ -206,7 +214,6 @@ float lpfTap(int k, float fcn, int radius)
 
 float4 PSDetect(VertData v) : TARGET
 {
-	const int TAP_RADIUS = 6;
 	int n    = (int)floor(v.uv.x * field_size.x);
 	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
 
@@ -251,13 +258,12 @@ float compAt(int n, int line)
 
 float4 PSDecode(VertData v) : TARGET
 {
-	const int LUMA_R   = 8;
-	const int CHROMA_R = 12;
 	int n    = (int)floor(v.uv.x * field_size.x);
 	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
 
 	// --- luminance (Y/C separation) ---
-	float luma = 0.0, lnorm = 0.0;
+	float luma = 0.0;
+	float lnorm = 0.0;
 	for (int k = -LUMA_R; k <= LUMA_R; ++k) {
 		float wgt = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * (float)k) * hamming(k, LUMA_R);
 		float s;
@@ -273,7 +279,9 @@ float4 PSDecode(VertData v) : TARGET
 
 	// --- chrominance (synchronous detection + post LPF) ---
 	float linePhase = field_base_phase + ((fmod((float)line, 2.0) >= 0.5) ? PI : 0.0);
-	float ci = 0.0, cq = 0.0, cnorm = 0.0;
+	float ci = 0.0;
+	float cq = 0.0;
+	float cnorm = 0.0;
 	for (int k = -CHROMA_R; k <= CHROMA_R; ++k) {
 		float wgt = 2.0 * chroma_cutoff * sinc(2.0 * chroma_cutoff * (float)k) * hamming(k, CHROMA_R);
 		float s;
@@ -352,11 +360,12 @@ float4 PSDisplay(VertData v) : TARGET
 	float sigma = max(spot_v, 0.15);
 	for (int d = -1; d <= 2; ++d) {
 		int li = base + d;
-		if (li < 0 || li >= maxLine) continue;
-		float dist = (float)li - lineF;
-		float wgt = exp(-0.5 * (dist * dist) / (sigma * sigma));
-		col += sampleLine(li, uv.x) * wgt;
-		wsum += wgt;
+		if (li >= 0 && li < maxLine) {
+			float dist = (float)li - lineF;
+			float wgt = exp(-0.5 * (dist * dist) / (sigma * sigma));
+			col += sampleLine(li, uv.x) * wgt;
+			wsum += wgt;
+		}
 	}
 	col /= max(wsum, 1.0e-5);
 
