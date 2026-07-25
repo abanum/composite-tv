@@ -489,7 +489,21 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 			f->burst = 0.0f;
 	}
 	float roll_speed = (f->glitch_enable ? f->v_roll_speed : 0.0f) + f->burst * 1.5f;
-	f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt, (double)ACTIVE_LINES);
+	if (roll_speed != 0.0f) {
+		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt,
+				     (double)ACTIVE_LINES);
+	} else if (f->v_roll_pos != 0.0) {
+		/* Vertical hold re-locks: slide back to the framed position by the
+		 * shortest way round, then snap once we are within half a line. */
+		const double half = ACTIVE_LINES * 0.5;
+		double p = fmod(f->v_roll_pos, (double)ACTIVE_LINES);
+		if (p > half)
+			p -= ACTIVE_LINES;
+		else if (p < -half)
+			p += ACTIVE_LINES;
+		p *= exp(-(double)dt / 0.25); /* ~250 ms settle */
+		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
+	}
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
 
 	gs_effect_t *e = f->effect;
