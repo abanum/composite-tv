@@ -14,7 +14,8 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Configuration = 'RelWithDebInfo'
+    [string]$Configuration = 'RelWithDebInfo',
+    [string]$ISCC = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -43,30 +44,48 @@ $dll = Join-Path $prefix 'ntsc-snow\bin\64bit\ntsc-snow.dll'
 if (-not (Test-Path $dll)) { throw "expected payload not found: $dll" }
 
 # --- locate ISCC.exe (Inno Setup compiler) -------------------------------
+# Inno Setup is a 32-bit app, so its uninstall entry lives under WOW6432Node.
 function Find-ISCC {
-    try {
-        $loc = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Inno Setup 6_is1' -ErrorAction Stop).InstallLocation
-        if ($loc) {
-            $p = Join-Path $loc 'ISCC.exe'
+    $roots = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall'
+    )
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        foreach ($key in (Get-ChildItem $root -ErrorAction SilentlyContinue)) {
+            $props = Get-ItemProperty $key.PSPath -ErrorAction SilentlyContinue
+            $isInno = ($key.PSChildName -like 'Inno Setup*_is1') -or ($props.DisplayName -like 'Inno Setup*')
+            if ($isInno -and $props.InstallLocation) {
+                $p = Join-Path $props.InstallLocation 'ISCC.exe'
+                if (Test-Path $p) { return $p }
+            }
+        }
+    }
+    foreach ($base in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, "$env:LOCALAPPDATA\Programs")) {
+        if (-not $base) { continue }
+        foreach ($ver in @('Inno Setup 6', 'Inno Setup 5', 'Inno Setup')) {
+            $p = Join-Path $base (Join-Path $ver 'ISCC.exe')
             if (Test-Path $p) { return $p }
         }
-    } catch {}
-    foreach ($p in @(
-            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
-            "${env:ProgramFiles}\Inno Setup 6\ISCC.exe")) {
-        if ($p -and (Test-Path $p)) { return $p }
     }
     $cmd = Get-Command ISCC.exe -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return $null
 }
 
-$iscc = Find-ISCC
+if ($ISCC -and (Test-Path $ISCC)) {
+    $iscc = $ISCC
+} else {
+    $iscc = Find-ISCC
+}
 if (-not $iscc) {
     Write-Host ""
-    Write-Warning "Inno Setup compiler (ISCC.exe) not found."
-    Write-Host    "  Install the free Inno Setup 6: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
-    Write-Host    "  Then run this script again." -ForegroundColor Yellow
+    Write-Warning "Inno Setup compiler (ISCC.exe) not found automatically."
+    Write-Host    "  If Inno Setup is installed, pass its path explicitly, e.g.:" -ForegroundColor Yellow
+    Write-Host    '    installer\build-installer.bat -ISCC "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"' -ForegroundColor Yellow
+    Write-Host    "  Find it with:  where.exe ISCC   (or search for ISCC.exe)" -ForegroundColor Yellow
+    Write-Host    "  Or install the free Inno Setup 6: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
     exit 1
 }
 Write-Host "==> ISCC: $iscc" -ForegroundColor Green
