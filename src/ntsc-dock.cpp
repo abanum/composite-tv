@@ -62,20 +62,35 @@ static obs_source_t *find_ntsc_filter(obs_source_t *src)
 	return ctx.found;
 }
 
-/* Fill the combo box with every source that currently has the filter. */
+/* Add a source to the combo if it has the filter and is not already listed. */
+static void add_if_filtered(QComboBox *combo, obs_source_t *src)
+{
+	if (!find_ntsc_filter(src))
+		return;
+	QString name = QString::fromUtf8(obs_source_get_name(src));
+	if (combo->findText(name) < 0)
+		combo->addItem(name);
+}
+
+/* Fill the combo box with every source or scene that currently has the filter.
+ * Inputs come from obs_enum_all_sources; scenes are added via obs_enum_scenes
+ * so a filter applied to a whole scene (the full composited picture) is listed
+ * regardless of how scenes are stored internally. */
 static void populate_sources(QComboBox *combo)
 {
 	QString current = combo->currentText();
 	combo->blockSignals(true);
 	combo->clear();
 
-	/* obs_enum_all_sources also lists scenes, so a filter added to a whole
-	 * scene (i.e. the full composited picture) shows up here too. */
 	obs_enum_all_sources(
 		[](void *param, obs_source_t *src) -> bool {
-			auto *cb = static_cast<QComboBox *>(param);
-			if (find_ntsc_filter(src))
-				cb->addItem(QString::fromUtf8(obs_source_get_name(src)));
+			add_if_filtered(static_cast<QComboBox *>(param), src);
+			return true;
+		},
+		combo);
+	obs_enum_scenes(
+		[](void *param, obs_source_t *src) -> bool {
+			add_if_filtered(static_cast<QComboBox *>(param), src);
 			return true;
 		},
 		combo);
