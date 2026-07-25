@@ -203,6 +203,7 @@ static obs_properties_t *na_get_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
 	obs_properties_t *p = obs_properties_create();
+	obs_properties_add_text(p, "hint", obs_module_text("NTSCSnow.Hint"), OBS_TEXT_INFO);
 	obs_properties_add_bool(p, "power", obs_module_text("NTSCSnow.Power"));
 	obs_properties_add_float_slider(p, "field_strength", obs_module_text("NTSCSnow.FieldStrength"), 0.0, 1.0,
 					0.01);
