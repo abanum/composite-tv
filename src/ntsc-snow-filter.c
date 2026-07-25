@@ -65,6 +65,7 @@ struct ntsc_snow {
 	float chroma_band_q;
 	float enc_chroma_gain;
 	int aspect_mode;
+	int screen_aspect;
 	float agc_level;
 	float agc_jitter;
 	float if_bandwidth;
@@ -134,6 +135,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->chroma_band_q = (float)obs_data_get_double(s, "chroma_band_q");
 	f->enc_chroma_gain = (float)obs_data_get_double(s, "enc_chroma_gain");
 	f->aspect_mode = (int)obs_data_get_int(s, "aspect_mode");
+	f->screen_aspect = (int)obs_data_get_int(s, "screen_aspect");
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
 	f->if_bandwidth = (float)obs_data_get_double(s, "if_bandwidth");
@@ -252,6 +254,10 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
+	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
+			   : (f->screen_aspect == 2) ? (16.0f / 9.0f)
+						     : ((float)cx / (float)cy);
+	set_f(e, "screen_aspect", scr_aspect);
 	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
 	set_f(e, "if_cutoff", (float)(f->if_bandwidth * 1.0e6 * 0.5 / SAMPLE_RATE_HZ));
@@ -398,6 +404,12 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "enc_chroma_gain", obs_module_text("NTSCSnow.EncChromaGain"), 0.0, 1.5,
 					0.05);
 
+	obs_property_t *scr = obs_properties_add_list(p, "screen_aspect", obs_module_text("NTSCSnow.ScreenAspect"),
+						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.Source"), 0);
+	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.43"), 1);
+	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.169"), 2);
+
 	obs_property_t *asp = obs_properties_add_list(p, "aspect_mode", obs_module_text("NTSCSnow.AspectMode"),
 						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(asp, obs_module_text("NTSCSnow.AspectMode.Letterbox"), 0);
@@ -435,6 +447,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "chroma_band_q", 0.4);
 	obs_data_set_default_double(s, "enc_chroma_gain", 1.0);
 	obs_data_set_default_int(s, "aspect_mode", 0);
+	obs_data_set_default_int(s, "screen_aspect", 0);
 	obs_data_set_default_double(s, "agc_level", 0.62);
 	obs_data_set_default_double(s, "agc_jitter", 0.06);
 	obs_data_set_default_double(s, "if_bandwidth", 5.0);

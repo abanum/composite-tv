@@ -34,6 +34,7 @@ uniform float burst_phase;        // colour-burst reference phase [rad]
 uniform float field_base_phase;   // per-field base subcarrier phase [rad]
 uniform float aspect_mode;        // 0: letterbox, 1: horizontal squeeze
 uniform float input_aspect;       // source width / height
+uniform float screen_aspect;      // CRT screen shape (width / height)
 
 // Detect
 uniform int   field_seed;         // per-field RNG seed
@@ -123,7 +124,7 @@ float3 rgb2yiq(float3 c)
 
 float3 sampleRGB(float sx, float row)
 {
-	float targetAspect = 4.0 / 3.0;
+	float targetAspect = screen_aspect;
 	float2 uv = float2(sx, row);
 	if (aspect_mode < 0.5) {
 		float scale = input_aspect / targetAspect;
@@ -348,7 +349,17 @@ float3 sampleLine(int lineIndex, float x)
 
 float4 PSDisplay(VertData v) : TARGET
 {
-	float2 uv = curve(v.uv, curvature);
+	// Fit the CRT screen (aspect = screen_aspect) inside the output canvas,
+	// adding black bars when the two aspect ratios differ. suv is the screen
+	// coordinate; anything outside [0,1] falls in the black border.
+	float out_aspect = output_size.x / output_size.y;
+	float2 suv = v.uv;
+	if (screen_aspect < out_aspect)
+		suv.x = (v.uv.x - 0.5) * (out_aspect / screen_aspect) + 0.5;
+	else
+		suv.y = (v.uv.y - 0.5) * (screen_aspect / out_aspect) + 0.5;
+
+	float2 uv = curve(suv, curvature);
 	float2 lo = step(float2(0.0, 0.0), uv);
 	float2 hi = step(uv, float2(1.0, 1.0));
 	float inScreen = lo.x * lo.y * hi.x * hi.y;
@@ -380,7 +391,7 @@ float4 PSDisplay(VertData v) : TARGET
 	float3 prev = display_prev.Sample(linearClamp, v.uv).rgb;
 	col = max(col, prev * persistence);
 
-	float2 vg = v.uv * 2.0 - 1.0;
+	float2 vg = suv * 2.0 - 1.0;
 	float vig = 1.0 - vignette * dot(vg, vg) * 0.55;
 	col *= clamp(vig, 0.0, 1.0);
 
