@@ -74,13 +74,16 @@ cmake --build --preset ubuntu-x86_64
 
 **作る側（要 [Inno Setup 6](https://jrsoftware.org/isdl.php)・無料）:**
 
+いちばん簡単なのは **`installer\build-installer.bat` をダブルクリック**するだけ
+（初回だけ先に `cmake --preset windows-x64` で構成しておく）。PowerShell から直接でも可:
+
 ```powershell
 cmake --preset windows-x64          # 未構成のときだけ
 powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
 ```
 
-`release\ntsc-snow-<version>-windows-x64.exe` が生成されます（ビルド → `cmake --install`
-→ Inno Setup コンパイルまで自動）。
+どちらも `release\ntsc-snow-<version>-windows-x64.exe` を生成します（ビルド →
+`cmake --install` → Inno Setup コンパイルまで自動）。
 
 **使う側（エンドユーザー）:** その `.exe` をダブルクリック。OBS のインストール先を
 自動検出して `obs-plugins\64bit\ntsc-snow.dll` と `data\obs-plugins\ntsc-snow\` を配置します
