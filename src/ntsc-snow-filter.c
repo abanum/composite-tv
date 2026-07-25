@@ -233,6 +233,54 @@ static gs_texture_t *run_pass(gs_effect_t *e, gs_texrender_t *tr, uint32_t w, ui
 	return gs_texrender_get_texture(tr);
 }
 
+/* Give EVERY effect parameter a value so no draw is ever skipped with
+ * "Not all shader parameters were set". Non-texture params default to zero,
+ * textures to a placeholder; the real values are assigned afterwards. */
+static void prime_all_params(gs_effect_t *e, gs_texture_t *placeholder)
+{
+	size_t count = gs_effect_get_num_params(e);
+	for (size_t i = 0; i < count; i++) {
+		gs_eparam_t *p = gs_effect_get_param_by_idx(e, i);
+		struct gs_effect_param_info info;
+		gs_effect_get_param_info(p, &info);
+		switch (info.type) {
+		case GS_SHADER_PARAM_BOOL:
+			gs_effect_set_bool(p, false);
+			break;
+		case GS_SHADER_PARAM_FLOAT:
+			gs_effect_set_float(p, 0.0f);
+			break;
+		case GS_SHADER_PARAM_INT:
+			gs_effect_set_int(p, 0);
+			break;
+		case GS_SHADER_PARAM_VEC2: {
+			struct vec2 z;
+			vec2_zero(&z);
+			gs_effect_set_vec2(p, &z);
+			break;
+		}
+		case GS_SHADER_PARAM_VEC3: {
+			struct vec3 z;
+			vec3_zero(&z);
+			gs_effect_set_vec3(p, &z);
+			break;
+		}
+		case GS_SHADER_PARAM_VEC4: {
+			struct vec4 z;
+			vec4_zero(&z);
+			gs_effect_set_vec4(p, &z);
+			break;
+		}
+		case GS_SHADER_PARAM_TEXTURE:
+			gs_effect_set_texture(p, placeholder);
+			break;
+		default:
+			/* matrices (ViewProj) are set automatically by the backend */
+			break;
+		}
+	}
+}
+
 static void ntsc_render(void *data, gs_effect_t *unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -284,12 +332,18 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	const float luma_cut = (float)(f->luma_bandwidth * 1.0e6 / SAMPLE_RATE_HZ);
 	const float field_base_phase = (float)fmod(NS_PI * (double)f->field_index4, 2.0 * NS_PI);
 
-	/* Set EVERY effect parameter before any pass is drawn. OBS effect
-	 * parameters are global, and the D3D11 backend skips a draw (logging
-	 * "Not all shader parameters were set") if any parameter is still unset
-	 * at draw time — which would blank the output. Textures that only the
-	 * Display pass needs are seeded with a placeholder here and replaced
-	 * with the real fields just before that pass. */
+	/* Create every render target up front, then give every effect parameter
+	 * a value. The D3D11 backend skips a draw (logging "Not all shader
+	 * parameters were set") if ANY parameter is unset at draw time, which
+	 * blanks the output. */
+	ensure_tr(&f->composite, GS_RGBA16F);
+	ensure_tr(&f->detector, GS_RGBA16F);
+	ensure_tr(&f->field[0], GS_RGBA16F);
+	ensure_tr(&f->field[1], GS_RGBA16F);
+	ensure_tr(&f->display[0], GS_RGBA);
+	ensure_tr(&f->display[1], GS_RGBA);
+	prime_all_params(e, input_tex);
+
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
 	set_f(e, "burst_phase", (float)BURST_PHASE_RAD);
