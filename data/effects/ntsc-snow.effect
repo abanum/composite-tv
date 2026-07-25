@@ -1,0 +1,409 @@
+/*
+ * ntsc-snow.effect — NTSC composite / snow simulation for OBS
+ *
+ * Ported from the WebGL2 "NTSC Snow Simulator" (https://github.com/abanum/ZAA,
+ * MIT licensed). The receiver signal chain is modelled rather than faked:
+ *
+ *   Encode : source RGB -> YIQ -> band-limit (Y/I/Q) -> 3.58 MHz modulation
+ *   Detect : Rician envelope detection of the carrier + band-limited complex
+ *            Gaussian IF noise. field_strength=1 -> clean, 0 -> pure Rayleigh snow.
+ *   Decode : Y/C separation (bandpass / 2-line comb / 3-line comb) + synchronous
+ *            chroma demodulation, YIQ -> RGB.
+ *   Display: interlaced weave of two temporally offset fields, beam spot, phosphor
+ *            persistence, scanlines, screen curvature and vignette.
+ *
+ * HLSL (Direct3D 11) is the primary target. The unsigned bit-hash used for the
+ * noise generator requires SM4+/GLSL 3.30+.
+ */
+
+uniform float4x4 ViewProj;
+
+uniform texture2d image;          // primary input of the current pass
+uniform texture2d field_prev;     // Display: previous decoded field (interlace)
+uniform texture2d display_prev;   // Display: previous final frame (persistence)
+
+uniform float2 field_size;        // (active samples per line, active lines per field)
+uniform float2 output_size;       // (cx, cy) of the rendered output
+
+// Encode
+uniform float luma_cutoff;        // Y bandwidth / fs
+uniform float cutoff_i;           // I bandwidth / fs
+uniform float cutoff_q;           // Q bandwidth / fs
+uniform float enc_chroma_gain;    // modulation chroma gain
+uniform float burst_phase;        // colour-burst reference phase [rad]
+uniform float field_base_phase;   // per-field base subcarrier phase [rad]
+uniform float aspect_mode;        // 0: letterbox, 1: horizontal squeeze
+uniform float input_aspect;       // source width / height
+
+// Detect
+uniform int   field_seed;         // per-field RNG seed
+uniform float if_cutoff;          // (IF bandwidth / 2) / fs
+uniform float field_strength;     // 0 (snow) .. 1 (clean)
+uniform float noise_floor;        // residual grain at full field strength
+uniform float agc_jitter;         // AGC hunting
+uniform float snow_level;         // detection level for the snow limit (agcLevel)
+
+// Decode
+uniform float chroma_cutoff;      // post-demod chroma LPF / fs
+uniform float chroma_gain;        // decoder chroma gain (0 = colour killed)
+uniform float chroma_phase;       // local oscillator phase [rad]
+uniform float contrast;
+uniform float brightness;
+uniform float yc_mode;            // 0: bandpass, 1: 2-line comb, 2: 3-line comb
+
+// Display
+uniform float active_lines;       // active lines per frame (2 * field lines)
+uniform float interlace_on;
+uniform float frame_parity;       // 0 / 1, flips each frame
+uniform float persistence;
+uniform float spot_v;             // beam spot radius (lines)
+uniform float spot_h;             // beam spot radius (samples)
+uniform float scanline;
+uniform float curvature;
+uniform float vignette;
+uniform float overscan;
+uniform float pixels_per_line;    // output pixels per active line
+
+#define PI 3.141592653589793
+
+sampler_state pointClamp {
+	Filter    = Point;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+sampler_state linearClamp {
+	Filter    = Linear;
+	AddressU  = Clamp;
+	AddressV  = Clamp;
+};
+
+struct VertData {
+	float4 pos : POSITION;
+	float2 uv  : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v)
+{
+	VertData o;
+	o.pos = mul(float4(v.pos.xyz, 1.0), ViewProj);
+	o.uv  = v.uv;
+	return o;
+}
+
+float sinc(float x)
+{
+	return (abs(x) < 1.0e-5) ? 1.0 : sin(PI * x) / (PI * x);
+}
+
+float hamming(int k, int radius)
+{
+	return 0.54 + 0.46 * cos(PI * (float)k / (float)(radius + 1));
+}
+
+//============================================================================
+// Encode : RGB -> composite
+//============================================================================
+
+float3 rgb2yiq(float3 c)
+{
+	return float3(
+		0.299 * c.r + 0.587 * c.g + 0.114 * c.b,
+		0.596 * c.r - 0.274 * c.g - 0.322 * c.b,
+		0.211 * c.r - 0.523 * c.g + 0.312 * c.b);
+}
+
+float3 sampleRGB(float sx, float row)
+{
+	float targetAspect = 4.0 / 3.0;
+	float2 uv = float2(sx, row);
+	if (aspect_mode < 0.5) {
+		float scale = input_aspect / targetAspect;
+		if (scale > 1.0)
+			uv.y = (uv.y - 0.5) * scale + 0.5;
+		else
+			uv.x = (uv.x - 0.5) / scale + 0.5;
+		if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+			return float3(0.0, 0.0, 0.0);
+	}
+	return image.Sample(linearClamp, uv).rgb;
+}
+
+float4 PSEncode(VertData v) : TARGET
+{
+	int   n    = (int)floor(v.uv.x * field_size.x);
+	int   line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	float du   = 1.0 / field_size.x;
+	float row  = ((float)line + 0.5) / field_size.y;
+
+	const int R_Y = 8;
+	const int R_I = 14;
+	const int R_Q = 26;
+
+	float y = 0.0, ci = 0.0, cq = 0.0;
+	float ny = 0.0, ni = 0.0, nq = 0.0;
+
+	for (int k = -R_Q; k <= R_Q; ++k) {
+		float sx = v.uv.x + (float)k * du;
+		float3 yiq = rgb2yiq(sampleRGB(sx, row));
+		float fk = (float)k;
+
+		float wq = 2.0 * cutoff_q * sinc(2.0 * cutoff_q * fk) * hamming(k, R_Q);
+		cq += yiq.z * wq; nq += wq;
+
+		if (k >= -R_I && k <= R_I) {
+			float wi = 2.0 * cutoff_i * sinc(2.0 * cutoff_i * fk) * hamming(k, R_I);
+			ci += yiq.y * wi; ni += wi;
+		}
+		if (k >= -R_Y && k <= R_Y) {
+			float wy = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * fk) * hamming(k, R_Y);
+			y += yiq.x * wy; ny += wy;
+		}
+	}
+	y  /= max(ny, 1.0e-6);
+	ci /= max(ni, 1.0e-6);
+	cq /= max(nq, 1.0e-6);
+
+	float linePhase = field_base_phase + ((fmod((float)line, 2.0) >= 0.5) ? PI : 0.0);
+	float phase = 0.5 * PI * (float)n + linePhase + burst_phase;
+	float composite = y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
+
+	float stored = composite * 0.375 + 0.5;
+	return float4(clamp(stored, 0.0, 1.0), y, 0.0, 1.0);
+}
+
+//============================================================================
+// Detect : Rician envelope detection with inline complex Gaussian IF noise
+//============================================================================
+
+// Float-only hash (Dave Hoskins, hash13). Avoids integer/uint ops so the effect
+// parses on both the Direct3D and OpenGL back-ends of libobs.
+float hash13(float3 p3)
+{
+	p3 = frac(p3 * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return frac((p3.x + p3.y) * p3.z);
+}
+
+// Complex Gaussian white noise (sigma = 1) via Box-Muller, clamped to +/-4.
+float2 noiseIQ(int line, int n)
+{
+	int w  = (int)field_size.x;
+	int nx = (n < 0) ? n + w : ((n >= w) ? n - w : n);
+	float3 p = float3((float)nx, (float)line, (float)field_seed);
+	float u1 = max(hash13(p), 1.0e-7);
+	float u2 = hash13(p + float3(37.0, 17.0, 5.0));
+	float r  = sqrt(-2.0 * log(u1));
+	float a  = 2.0 * PI * u2;
+	return clamp(float2(r * cos(a), r * sin(a)), -4.0, 4.0);
+}
+
+float lpfTap(int k, float fcn, int radius)
+{
+	float fk = (float)k;
+	return 2.0 * fcn * sinc(2.0 * fcn * fk) * hamming(k, radius);
+}
+
+float4 PSDetect(VertData v) : TARGET
+{
+	const int TAP_RADIUS = 6;
+	int n    = (int)floor(v.uv.x * field_size.x);
+	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+
+	float2 noise = float2(0.0, 0.0);
+	float norm = 0.0;
+	for (int k = -TAP_RADIUS; k <= TAP_RADIUS; ++k) {
+		float wgt = lpfTap(k, if_cutoff, TAP_RADIUS);
+		noise += noiseIQ(line, n + k) * wgt;
+		norm  += wgt * wgt;
+	}
+	noise /= sqrt(max(norm, 1.0e-6));
+
+	float2 base = float2(((float)n + 0.5) / field_size.x, ((float)line + 0.5) / field_size.y);
+	float stored = image.Sample(pointClamp, base).r;
+	float composite = (stored - 0.5) / 0.375;
+
+	float sigma = lerp(1.0, noise_floor, field_strength);
+	float A = field_strength * (1.0 + composite);
+	float re = A + noise.x * sigma;
+	float im = noise.y * sigma;
+	float env = sqrt(re * re + im * im);
+
+	float videoDetected = (env - field_strength) / max(field_strength, 0.15);
+	float wobble = 1.0 + agc_jitter * (hash13(float3((float)field_seed, (float)line, 7.0)) - 0.5);
+	float snowDetected = 1.0 - env * (snow_level / 1.2533141) * wobble;
+	float detected = lerp(snowDetected, videoDetected, smoothstep(0.0, 0.35, field_strength));
+
+	return float4(clamp(detected, 0.0, 1.0), 0.0, 0.0, 1.0);
+}
+
+//============================================================================
+// Decode : Y/C separation + synchronous chroma demodulation -> RGB
+//============================================================================
+
+float compAt(int n, int line)
+{
+	int nx = clamp(n, 0, (int)field_size.x - 1);
+	int ny = clamp(line, 0, (int)field_size.y - 1);
+	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ny + 0.5) / field_size.y);
+	return image.Sample(pointClamp, uv).r;
+}
+
+float4 PSDecode(VertData v) : TARGET
+{
+	const int LUMA_R   = 8;
+	const int CHROMA_R = 12;
+	int n    = (int)floor(v.uv.x * field_size.x);
+	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+
+	// --- luminance (Y/C separation) ---
+	float luma = 0.0, lnorm = 0.0;
+	for (int k = -LUMA_R; k <= LUMA_R; ++k) {
+		float wgt = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * (float)k) * hamming(k, LUMA_R);
+		float s;
+		if (yc_mode < 0.5)
+			s = compAt(n + k, line);
+		else if (yc_mode < 1.5)
+			s = 0.5 * (compAt(n + k, line) + compAt(n + k, line - 1));
+		else
+			s = 0.25 * (compAt(n + k, line - 1) + 2.0 * compAt(n + k, line) + compAt(n + k, line + 1));
+		luma += s * wgt; lnorm += wgt;
+	}
+	luma /= max(lnorm, 1.0e-6);
+
+	// --- chrominance (synchronous detection + post LPF) ---
+	float linePhase = field_base_phase + ((fmod((float)line, 2.0) >= 0.5) ? PI : 0.0);
+	float ci = 0.0, cq = 0.0, cnorm = 0.0;
+	for (int k = -CHROMA_R; k <= CHROMA_R; ++k) {
+		float wgt = 2.0 * chroma_cutoff * sinc(2.0 * chroma_cutoff * (float)k) * hamming(k, CHROMA_R);
+		float s;
+		if (yc_mode < 0.5)
+			s = compAt(n + k, line);
+		else if (yc_mode < 1.5)
+			s = 0.5 * (compAt(n + k, line) - compAt(n + k, line - 1));
+		else
+			s = compAt(n + k, line) - 0.5 * (compAt(n + k, line - 1) + compAt(n + k, line + 1));
+		float ph = 0.5 * PI * (float)(n + k) + linePhase + burst_phase + chroma_phase;
+		ci += s * cos(ph) * wgt;
+		cq += s * sin(ph) * wgt;
+		cnorm += wgt;
+	}
+	float inv = 2.0 / max(cnorm, 1.0e-6);
+	ci *= inv * chroma_gain;
+	cq *= inv * chroma_gain;
+
+	float Y = luma * contrast + brightness;
+	float3 rgb = float3(
+		Y + 0.9563 * ci + 0.6210 * cq,
+		Y - 0.2721 * ci - 0.6474 * cq,
+		Y - 1.1070 * ci + 1.7046 * cq);
+
+	return float4(clamp(rgb, 0.0, 1.0), 1.0);
+}
+
+//============================================================================
+// Display : interlaced CRT presentation
+//============================================================================
+
+float2 curve(float2 uv, float amount)
+{
+	float2 c = uv * 2.0 - 1.0;
+	float r2 = dot(c, c);
+	c *= 1.0 + amount * r2;
+	return c * 0.5 + 0.5;
+}
+
+// Sample a scan line, choosing the current or previous field for the weave.
+float3 sampleLine(int lineIndex, float x)
+{
+	float p = fmod((float)lineIndex, 2.0);
+	float fp = frame_parity;
+	float samePar = (abs(p - fp) < 0.5) ? 1.0 : 0.0;
+	float useCur = (interlace_on < 0.5 || samePar > 0.5) ? 1.0 : 0.0;
+	float row = (floor((float)lineIndex * 0.5) + 0.5) / field_size.y;
+	float dx = spot_h * 0.5 / field_size.x;
+
+	float3 ca = image.Sample(linearClamp, float2(x - dx, row)).rgb;
+	float3 cb = image.Sample(linearClamp, float2(x + dx, row)).rgb;
+	float3 cur = (ca + cb) * 0.5;
+
+	float3 pa = field_prev.Sample(linearClamp, float2(x - dx, row)).rgb;
+	float3 pb = field_prev.Sample(linearClamp, float2(x + dx, row)).rgb;
+	float3 prev = (pa + pb) * 0.5;
+
+	return lerp(prev, cur, useCur);
+}
+
+float4 PSDisplay(VertData v) : TARGET
+{
+	float2 uv = curve(v.uv, curvature);
+	float2 lo = step(float2(0.0, 0.0), uv);
+	float2 hi = step(uv, float2(1.0, 1.0));
+	float inScreen = lo.x * lo.y * hi.x * hi.y;
+
+	uv = (uv - 0.5) * (1.0 - overscan * 2.0) + 0.5;
+
+	float lineF = (1.0 - uv.y) * active_lines - 0.5;
+	int base = (int)floor(lineF);
+	int maxLine = (int)active_lines;
+
+	float3 col = float3(0.0, 0.0, 0.0);
+	float wsum = 0.0;
+	float sigma = max(spot_v, 0.15);
+	for (int d = -1; d <= 2; ++d) {
+		int li = base + d;
+		if (li < 0 || li >= maxLine) continue;
+		float dist = (float)li - lineF;
+		float wgt = exp(-0.5 * (dist * dist) / (sigma * sigma));
+		col += sampleLine(li, uv.x) * wgt;
+		wsum += wgt;
+	}
+	col /= max(wsum, 1.0e-5);
+
+	float visibility = scanline * smoothstep(2.2, 3.0, pixels_per_line);
+	float phase = frac(lineF);
+	col *= 1.0 - visibility * (0.5 - 0.5 * cos(6.2831853 * phase));
+
+	float3 prev = display_prev.Sample(linearClamp, v.uv).rgb;
+	col = max(col, prev * persistence);
+
+	float2 vg = v.uv * 2.0 - 1.0;
+	float vig = 1.0 - vignette * dot(vg, vg) * 0.55;
+	col *= clamp(vig, 0.0, 1.0);
+
+	return float4(col * inScreen, 1.0);
+}
+
+//============================================================================
+// Draw : passthrough blit of the final frame to the screen
+//============================================================================
+
+float4 PSDraw(VertData v) : TARGET
+{
+	return image.Sample(linearClamp, v.uv);
+}
+
+technique Encode
+{
+	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSEncode(v_in); }
+}
+
+technique Detect
+{
+	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDetect(v_in); }
+}
+
+technique Decode
+{
+	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDecode(v_in); }
+}
+
+technique Display
+{
+	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDisplay(v_in); }
+}
+
+technique Draw
+{
+	pass p0 { vertex_shader = VSDefault(v_in); pixel_shader = PSDraw(v_in); }
+}
