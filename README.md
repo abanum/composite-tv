@@ -136,6 +136,31 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 「声 → 砂嵐」へ連続的にフェードします。音量・インターキャリア音はフィルタのプロパティで
 個別に調整できます。
 
+### グリッチ（受信不良の演出）
+
+フィルタ下部の「**グリッチ**」グループを ON にすると、受信機モデルの各段に破綻を
+差し込めます（OFF のときは完全に元の見え方に戻ります）。
+
+| 項目 | 差し込む段 | 見え方 |
+|---|---|---|
+| ゴースト強度 / 遅延 | 検波前 | 遅れて届いた反射波による多重像。Y/C 分離前なので色にじみを伴う。遅延を**負**にすると先行ゴースト |
+| 干渉ビート 強度 / 周波数 | エンコード | 流れる斜め縞。3.58MHz 付近では虹色のクロスカラー |
+| 垂直ロール速度 / 帰線帯 | 表示 | 画面が上下に流れ、継ぎ目に黒い帯（V-Hold 不良） |
+| 水平同期ジッタ | 表示 | 行ごとに横へ揺れ、左端がギザギザに |
+| フラッギング | 表示 | 画面**上部だけ**が横に曲がる（VTR の定番） |
+| ヘッドスイッチング | 表示 | 画面**下部**数ラインが千切れる（VHS） |
+| ドロップアウト | 表示 | 白い横筋がランダムに走る（テープ傷） |
+
+**一時発動**: ドックの「**グリッチ発動！**」ボタン、または 設定 → ホットキー の
+「**NTSC 砂嵐: グリッチ発動**」で、数百 ms だけ一気に暴れて自然に収まります
+（長さは「一時発動の長さ」で調整）。グループが OFF でもボタンだけは効きます。
+
+**おすすめの組み合わせ**
+
+- **古いアンテナ・弱電界**: ゴースト 0.25 / 遅延 30 / 水平ジッタ 0.15 / 電界強度 0.6
+- **VHS 再生**: ヘッドスイッチング 0.5 / ドロップアウト 0.3 / フラッギング 0.4
+- **チャンネル調整中**: 垂直ロール 0.3 / 帰線帯 12 / 干渉ビート 0.15
+
 ### 試すと分かりやすい設定
 
 - **電界強度**をゆっくり下げると、カラー映像 → ざらつき → 白黒の砂嵐へ連続的に遷移します。
@@ -219,6 +244,15 @@ output". For a look shared across all scenes, nest your scenes inside one master
 filter the master. OBS has no way to filter the post-mix broadcast output itself; a scene is
 the effective top level. The dock's target drop-down lists scenes too, so field strength and
 power can be driven live for a whole scene.
+
+### Glitches
+
+Switch on the **Glitches** group for reception faults injected at the physically correct
+stage: multipath **ghosting** (before Y/C separation, so it smears colour; a negative delay
+gives a leading ghost), an **interference beat** (herringbone plus rainbow cross-colour),
+**vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
+bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Glitch!** button
+and the *NTSC Snow: trigger glitch* hotkey fire a momentary burst that settles on its own.
 
 ### Audio
 

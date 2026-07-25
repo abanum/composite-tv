@@ -144,6 +144,17 @@ static void set_filter_double(const QString &name, const char *id, const char *k
 	});
 }
 
+/* Bump an int setting (used to pulse the glitch burst). */
+static void bump_filter_int(const QString &name, const char *id, const char *key)
+{
+	with_filter(name, id, [&](obs_source_t *filter) {
+		obs_data_t *s = obs_source_get_settings(filter);
+		obs_data_set_int(s, key, obs_data_get_int(s, key) + 1);
+		obs_source_update(filter, s);
+		obs_data_release(s);
+	});
+}
+
 /* Set a bool setting on the given-id filter of the named source. */
 static void set_filter_bool(const QString &name, const char *id, const char *key, bool value)
 {
@@ -186,6 +197,10 @@ void ntsc_dock_register(void)
 	slider->setRange(0, 100);
 	slider->setValue(100);
 	layout->addWidget(slider);
+
+	/* momentary glitch burst */
+	QPushButton *glitch = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Glitch")));
+	layout->addWidget(glitch);
 	layout->addStretch(1);
 
 	populate(vid_combo, FILTER_ID);
@@ -225,6 +240,9 @@ void ntsc_dock_register(void)
 		power->setText(QString::fromUtf8(
 			obs_module_text(next ? "NTSCSnow.Dock.PowerOff" : "NTSCSnow.Dock.PowerOn")));
 	});
+
+	QObject::connect(glitch, &QPushButton::clicked,
+			 [vid_combo]() { bump_filter_int(vid_combo->currentText(), FILTER_ID, "glitch_pulse"); });
 
 	sync();
 

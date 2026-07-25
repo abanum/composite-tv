@@ -1,5 +1,5 @@
 /*
- * ntsc-snow.effect — NTSC composite / snow simulation for OBS
+ * ntsc-snow.effect - NTSC composite / snow simulation for OBS
  *
  * Ported from the WebGL2 "NTSC Snow Simulator" (https://github.com/abanum/ZAA,
  * MIT licensed). The receiver signal chain is modelled rather than faked:
@@ -64,6 +64,19 @@ uniform float curvature;
 uniform float vignette;
 uniform float overscan;
 uniform float pixels_per_line;    // output pixels per active ln
+
+// Glitches
+uniform float ghost_gain;         // multipath ghost amplitude
+uniform float ghost_delay;        // ghost delay in samples (negative = leading)
+uniform float beat_gain;          // interfering carrier amplitude
+uniform float beat_norm;          // interfering carrier frequency / fs
+uniform float beat_phase;         // interfering carrier phase [rad]
+uniform float v_roll;             // vertical roll offset [lines]
+uniform float v_bar;              // blanking bar height [lines]
+uniform float h_jitter;           // per-line horizontal jitter
+uniform float flagging;           // top-of-picture horizontal bend
+uniform float head_switch;        // VHS head-switching tear at the bottom
+uniform float dropout;            // tape dropout streaks
 
 // Power on/off animation
 uniform float warmup;             // 0: dark .. 1: full brightness
@@ -183,6 +196,14 @@ float4 PSEncode(VertData v) : TARGET
 	float phase = 0.5 * PI * (float)n + linePhase + burst_phase;
 	float composite = y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
 
+	// Interfering carrier (herringbone). Phase runs off the absolute sample
+	// position, so it shears line to line and produces the classic diagonal
+	// pattern - and rainbow cross-colour when it lands near the subcarrier.
+	if (beat_gain > 0.0) {
+		float totalN = (float)ln * 910.0 + (float)n;   // 1H = 910 samples
+		composite += beat_gain * sin(2.0 * PI * beat_norm * totalN + beat_phase);
+	}
+
 	float stored = composite * 0.375 + 0.5;
 	return float4(clamp(stored, 0.0, 1.0), y, 0.0, 1.0);
 }
@@ -219,6 +240,14 @@ float lpfTap(int k, float fcn, int radius)
 	return 2.0 * fcn * sinc(2.0 * fcn * fk) * hamming(k, radius);
 }
 
+// Composite amplitude at an arbitrary sample of the current line.
+float compositeAt(int n, int ln)
+{
+	int nx = clamp(n, 0, (int)field_size.x - 1);
+	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
+	return (image.Sample(pointClamp, uv).r - 0.5) / 0.375;
+}
+
 float4 PSDetect(VertData v) : TARGET
 {
 	int n    = (int)floor(v.uv.x * field_size.x);
@@ -236,6 +265,12 @@ float4 PSDetect(VertData v) : TARGET
 	float2 base = float2(((float)n + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
 	float stored = image.Sample(pointClamp, base).r;
 	float composite = (stored - 0.5) / 0.375;
+
+	// Multipath ghost: a delayed, attenuated copy of the same carrier. Added
+	// before Y/C separation, so the ghost carries chroma and smears colour
+	// exactly like a real reflection. Negative delay gives a leading ghost.
+	if (ghost_gain > 0.0)
+		composite += ghost_gain * compositeAt(n - (int)ghost_delay, ln);
 
 	float sigma = lerp(1.0, noise_floor, field_strength);
 	float A = field_strength * (1.0 + composite);
@@ -332,6 +367,31 @@ float2 curve(float2 uv, float amount)
 	return c * 0.5 + 0.5;
 }
 
+// Horizontal displacement of one scan line: sync jitter, top-of-picture
+// flagging (the classic VTR bend), and the VHS head-switching tear along the
+// bottom edge.
+float lineShift(int li)
+{
+	float t = (float)li / max(active_lines, 1.0);   // 0 = top, 1 = bottom
+	float o = 0.0;
+
+	if (h_jitter > 0.0)
+		o += h_jitter * (hash13(float3((float)li, (float)field_seed, 3.0)) - 0.5) * 0.06;
+
+	if (flagging > 0.0)
+		o += flagging * 0.12 * exp(-t * 18.0);
+
+	if (head_switch > 0.0) {
+		float band = head_switch * 0.05;            // fraction of picture height
+		float fromBottom = 1.0 - t;
+		if (fromBottom < band) {
+			float depth = 1.0 - fromBottom / max(band, 1.0e-4);
+			o += (hash13(float3((float)li, (float)field_seed, 9.0)) - 0.5) * 0.25 * depth;
+		}
+	}
+	return o;
+}
+
 // Sample a scan ln, choosing the current or previous field for the weave.
 float3 sampleLine(int lineIndex, float x)
 {
@@ -341,6 +401,7 @@ float3 sampleLine(int lineIndex, float x)
 	float useCur = (interlace_on < 0.5 || samePar > 0.5) ? 1.0 : 0.0;
 	float row = (floor((float)lineIndex * 0.5) + 0.5) / field_size.y;
 	float dx = spot_h * 0.5 / field_size.x;
+	x += lineShift(lineIndex);
 
 	float3 ca = image.Sample(linearClamp, float2(x - dx, row)).rgb;
 	float3 cb = image.Sample(linearClamp, float2(x + dx, row)).rgb;
@@ -380,7 +441,12 @@ float4 PSDisplay(VertData v) : TARGET
 	uv.x = (uv.x - 0.5) / cH + 0.5;
 	float bandMask = step(0.0, uv.y) * step(uv.y, 1.0) * step(0.0, uv.x) * step(uv.x, 1.0);
 
-	float lineF = uv.y * active_lines - 0.5;
+	// Vertical roll (V-hold failure): scroll the picture and wrap it around,
+	// so the field seam - the blanking bar - marches through the screen.
+	float lineF = uv.y * active_lines - 0.5 + v_roll;
+	lineF = fmod(lineF + active_lines * 8.0, active_lines);
+	float inBar = (v_bar > 0.0 && lineF < v_bar) ? 1.0 : 0.0;
+
 	int base = (int)floor(lineF);
 	int maxLine = (int)active_lines;
 
@@ -401,6 +467,23 @@ float4 PSDisplay(VertData v) : TARGET
 	float visibility = scanline * smoothstep(2.2, 3.0, pixels_per_line);
 	float phase = frac(lineF);
 	col *= 1.0 - visibility * (0.5 - 0.5 * cos(6.2831853 * phase));
+
+	// Tape dropout: short bright streaks on random lines.
+	if (dropout > 0.0) {
+		float li = floor(lineF);
+		if (hash13(float3(li, (float)field_seed, 11.0)) < dropout * 0.05) {
+			float start = hash13(float3(li, (float)field_seed, 13.0)) * 0.9;
+			float len = 0.05 + hash13(float3(li, (float)field_seed, 17.0)) * 0.25;
+			if (uv.x > start && uv.x < start + len)
+				col = lerp(col, float3(0.92, 0.92, 0.92), 0.85);
+		}
+	}
+
+	// Blanking bar riding the roll seam: dark, with a little residual noise.
+	if (inBar > 0.5) {
+		float g = hash13(float3(floor(lineF), floor(uv.x * field_size.x), (float)field_seed));
+		col = float3(0.03, 0.03, 0.03) + g * 0.06;
+	}
 
 	float3 prev = display_prev.Sample(linearClamp, v.uv).rgb;
 	col = max(col, prev * persistence);

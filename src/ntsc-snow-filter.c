@@ -96,6 +96,27 @@ struct ntsc_snow {
 	float curvature;
 	float vignette;
 	float overscan;
+
+	/* glitches */
+	bool glitch_enable;
+	float ghost_gain;
+	float ghost_delay;
+	float v_roll_speed;
+	float v_bar;
+	float h_jitter;
+	float flagging;
+	float head_switch;
+	float dropout;
+	float beat_gain;
+	float beat_freq;
+	float burst_len;
+
+	/* glitch animation state */
+	double v_roll_pos;
+	double beat_phase;
+	float burst;          /* 1 -> 0 momentary glitch envelope */
+	long long glitch_pulse; /* bumped by the dock to fire a burst */
+	obs_hotkey_id glitch_hotkey;
 };
 
 /* ---- small effect-parameter setters ---------------------------------- */
@@ -121,6 +142,11 @@ static inline void set_v2(gs_effect_t *e, const char *n, float x, float y)
 	gs_eparam_t *p = gs_effect_get_param_by_name(e, n);
 	if (p)
 		gs_effect_set_vec2(p, &v);
+}
+
+static inline float clampf(float v, float lo, float hi)
+{
+	return v < lo ? lo : (v > hi ? hi : v);
 }
 
 static inline void set_tex(gs_effect_t *e, const char *n, gs_texture_t *t)
@@ -238,12 +264,46 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->curvature = (float)obs_data_get_double(s, "curvature");
 	f->vignette = (float)obs_data_get_double(s, "vignette");
 	f->overscan = (float)obs_data_get_double(s, "overscan");
+
+	f->glitch_enable = obs_data_get_bool(s, "glitch_enable");
+	f->ghost_gain = (float)obs_data_get_double(s, "ghost_gain");
+	f->ghost_delay = (float)obs_data_get_double(s, "ghost_delay");
+	f->v_roll_speed = (float)obs_data_get_double(s, "v_roll_speed");
+	f->v_bar = (float)obs_data_get_double(s, "v_bar");
+	f->h_jitter = (float)obs_data_get_double(s, "h_jitter");
+	f->flagging = (float)obs_data_get_double(s, "flagging");
+	f->head_switch = (float)obs_data_get_double(s, "head_switch");
+	f->dropout = (float)obs_data_get_double(s, "dropout");
+	f->beat_gain = (float)obs_data_get_double(s, "beat_gain");
+	f->beat_freq = (float)obs_data_get_double(s, "beat_freq");
+	f->burst_len = (float)obs_data_get_double(s, "burst_len");
+
+	/* The dock fires a burst by incrementing this counter. */
+	long long pulse = obs_data_get_int(s, "glitch_pulse");
+	if (pulse != f->glitch_pulse) {
+		f->glitch_pulse = pulse;
+		f->burst = 1.0f;
+	}
+}
+
+/* Hotkey: fire a momentary glitch burst. */
+static void ntsc_glitch_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct ntsc_snow *f = data;
+	f->burst = 1.0f;
 }
 
 static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ntsc_snow *f = bzalloc(sizeof(struct ntsc_snow));
 	f->source = source;
+	f->glitch_hotkey = obs_hotkey_register_source(source, "ntsc_snow.glitch",
+						      obs_module_text("NTSCSnow.Hotkey.Glitch"),
+						      ntsc_glitch_hotkey, f);
 
 	char *path = obs_module_file("effects/ntsc-snow.effect");
 	obs_enter_graphics();
@@ -274,6 +334,8 @@ static void free_texrender(gs_texrender_t **tr)
 static void ntsc_destroy(void *data)
 {
 	struct ntsc_snow *f = data;
+	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->glitch_hotkey);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);
@@ -372,6 +434,22 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "vignette", f->vignette);
 	set_f(e, "overscan", f->overscan);
 	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
+
+	/* Glitches. When the group is off only the momentary burst contributes,
+	 * so the dock button / hotkey still works from a clean picture. */
+	const float on = f->glitch_enable ? 1.0f : 0.0f;
+	const float b = f->burst;
+	set_f(e, "ghost_gain", on * f->ghost_gain);
+	set_f(e, "ghost_delay", on * f->ghost_delay);
+	set_f(e, "beat_gain", on * f->beat_gain);
+	set_f(e, "beat_norm", (float)(f->beat_freq * 1.0e6 / SAMPLE_RATE_HZ));
+	set_f(e, "beat_phase", (float)f->beat_phase);
+	set_f(e, "v_roll", (float)f->v_roll_pos);
+	set_f(e, "v_bar", (on * f->v_bar > 0.0f || b > 0.0f) ? (on * f->v_bar + b * 12.0f) : 0.0f);
+	set_f(e, "h_jitter", clampf(on * f->h_jitter + b * 0.8f, 0.0f, 2.0f));
+	set_f(e, "flagging", clampf(on * f->flagging + b * 0.6f, 0.0f, 2.0f));
+	set_f(e, "head_switch", clampf(on * f->head_switch + b * 0.5f, 0.0f, 2.0f));
+	set_f(e, "dropout", clampf(on * f->dropout + b * 0.6f, 0.0f, 2.0f));
 }
 
 static void ntsc_render(void *data, gs_effect_t *unused)
@@ -402,6 +480,17 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	f->field_index4 = (f->field_index4 + 1) & 3;
 	f->chroma_phase_acc = fmod(f->chroma_phase_acc + (double)f->chroma_drift * dt, 2.0 * NS_PI);
 	power_advance(f, dt);
+
+	/* glitch animation: decay the burst, advance the roll and the beat */
+	if (f->burst > 0.0f) {
+		float len = f->burst_len > 0.05f ? f->burst_len : 0.4f;
+		f->burst -= dt / len;
+		if (f->burst < 0.0f)
+			f->burst = 0.0f;
+	}
+	float roll_speed = (f->glitch_enable ? f->v_roll_speed : 0.0f) + f->burst * 1.5f;
+	f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt, (double)ACTIVE_LINES);
+	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
 
 	gs_effect_t *e = f->effect;
 
@@ -533,6 +622,21 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
 	obs_properties_add_float_slider(p, "overscan", obs_module_text("NTSCSnow.Overscan"), 0.0, 0.08, 0.005);
 
+	/* --- glitches (collapsible, switched off by default) --- */
+	obs_properties_t *g = obs_properties_create();
+	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("NTSCSnow.GhostGain"), 0.0, 0.8, 0.01);
+	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("NTSCSnow.GhostDelay"), -60.0, 120.0, 1.0);
+	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("NTSCSnow.VRollSpeed"), -2.0, 2.0, 0.01);
+	obs_properties_add_float_slider(g, "v_bar", obs_module_text("NTSCSnow.VBar"), 0.0, 30.0, 1.0);
+	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("NTSCSnow.HJitter"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "flagging", obs_module_text("NTSCSnow.Flagging"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "head_switch", obs_module_text("NTSCSnow.HeadSwitch"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "dropout", obs_module_text("NTSCSnow.Dropout"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "beat_gain", obs_module_text("NTSCSnow.BeatGain"), 0.0, 0.5, 0.01);
+	obs_properties_add_float_slider(g, "beat_freq", obs_module_text("NTSCSnow.BeatFreq"), 0.1, 5.0, 0.01);
+	obs_properties_add_float_slider(g, "burst_len", obs_module_text("NTSCSnow.BurstLen"), 0.1, 2.0, 0.05);
+	obs_properties_add_group(p, "glitch_enable", obs_module_text("NTSCSnow.Glitch"), OBS_GROUP_CHECKABLE, g);
+
 	return p;
 }
 
@@ -564,6 +668,19 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "curvature", 0.025);
 	obs_data_set_default_double(s, "vignette", 0.30);
 	obs_data_set_default_double(s, "overscan", 0.02);
+
+	obs_data_set_default_bool(s, "glitch_enable", false);
+	obs_data_set_default_double(s, "ghost_gain", 0.0);
+	obs_data_set_default_double(s, "ghost_delay", 24.0);
+	obs_data_set_default_double(s, "v_roll_speed", 0.0);
+	obs_data_set_default_double(s, "v_bar", 12.0);
+	obs_data_set_default_double(s, "h_jitter", 0.0);
+	obs_data_set_default_double(s, "flagging", 0.0);
+	obs_data_set_default_double(s, "head_switch", 0.0);
+	obs_data_set_default_double(s, "dropout", 0.0);
+	obs_data_set_default_double(s, "beat_gain", 0.0);
+	obs_data_set_default_double(s, "beat_freq", 2.5);
+	obs_data_set_default_double(s, "burst_len", 0.4);
 }
 
 struct obs_source_info ntsc_snow_filter_info = {
