@@ -284,46 +284,38 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	const float luma_cut = (float)(f->luma_bandwidth * 1.0e6 / SAMPLE_RATE_HZ);
 	const float field_base_phase = (float)fmod(NS_PI * (double)f->field_index4, 2.0 * NS_PI);
 
+	/* Set EVERY effect parameter before any pass is drawn. OBS effect
+	 * parameters are global, and the D3D11 backend skips a draw (logging
+	 * "Not all shader parameters were set") if any parameter is still unset
+	 * at draw time — which would blank the output. Textures that only the
+	 * Display pass needs are seeded with a placeholder here and replaced
+	 * with the real fields just before that pass. */
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
 	set_f(e, "burst_phase", (float)BURST_PHASE_RAD);
 	set_f(e, "field_base_phase", field_base_phase);
-
-	/* 2) Encode: RGB -> composite */
+	/* Encode */
 	set_f(e, "luma_cutoff", luma_cut);
 	set_f(e, "cutoff_i", (float)(f->chroma_band_i * 1.0e6 / SAMPLE_RATE_HZ));
 	set_f(e, "cutoff_q", (float)(f->chroma_band_q * 1.0e6 / SAMPLE_RATE_HZ));
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
-	ensure_tr(&f->composite, GS_RGBA16F);
-	gs_texture_t *comp = run_pass(e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex);
-
-	/* 3) Detect: Rician envelope detection + inline IF noise */
+	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
 	set_f(e, "if_cutoff", (float)(f->if_bandwidth * 1.0e6 * 0.5 / SAMPLE_RATE_HZ));
 	set_f(e, "field_strength", f->field_strength);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
 	set_f(e, "snow_level", f->agc_level);
-	ensure_tr(&f->detector, GS_RGBA16F);
-	gs_texture_t *det = run_pass(e, f->detector, FIELD_W, FIELD_H, "Detect", comp);
-
-	/* 4) Decode: Y/C separation + chroma demod -> RGB field */
+	/* Decode */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
 	set_f(e, "chroma_gain", f->color_killer ? 0.0f : f->chroma_gain);
 	set_f(e, "chroma_phase", (float)f->chroma_phase_acc);
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
-	ensure_tr(&f->field[0], GS_RGBA16F);
-	ensure_tr(&f->field[1], GS_RGBA16F);
-	gs_texture_t *field_cur = run_pass(e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det);
-	gs_texture_t *field_prev = gs_texrender_get_texture(f->field[1 - f->field_idx]);
-	if (!field_prev)
-		field_prev = field_cur;
-
-	/* 5) Display: interlaced CRT presentation into the display buffer */
+	/* Display */
 	set_f(e, "active_lines", (float)ACTIVE_LINES);
 	set_f(e, "interlace_on", f->interlace ? 1.0f : 0.0f);
 	set_f(e, "frame_parity", (float)(f->field_index4 & 1));
@@ -335,6 +327,24 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	set_f(e, "vignette", f->vignette);
 	set_f(e, "overscan", f->overscan);
 	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
+	set_tex(e, "field_prev", input_tex);
+	set_tex(e, "display_prev", input_tex);
+
+	/* 2) Encode -> 3) Detect -> 4) Decode */
+	ensure_tr(&f->composite, GS_RGBA16F);
+	gs_texture_t *comp = run_pass(e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex);
+
+	ensure_tr(&f->detector, GS_RGBA16F);
+	gs_texture_t *det = run_pass(e, f->detector, FIELD_W, FIELD_H, "Detect", comp);
+
+	ensure_tr(&f->field[0], GS_RGBA16F);
+	ensure_tr(&f->field[1], GS_RGBA16F);
+	gs_texture_t *field_cur = run_pass(e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det);
+
+	/* 5) Display: interlaced CRT presentation into the display buffer */
+	gs_texture_t *field_prev = gs_texrender_get_texture(f->field[1 - f->field_idx]);
+	if (!field_prev)
+		field_prev = field_cur;
 	set_tex(e, "field_prev", field_prev);
 
 	gs_texture_t *disp_prev = gs_texrender_get_texture(f->display[1 - f->display_idx]);
@@ -348,10 +358,8 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 	/* 6) blit the final frame to the actual filter output */
 	if (display_cur) {
-		gs_effect_t *def = obs_get_base_effect(OBS_EFFECT_DEFAULT);
-		gs_eparam_t *img = gs_effect_get_param_by_name(def, "image");
-		gs_effect_set_texture(img, display_cur);
-		while (gs_effect_loop(def, "Draw"))
+		set_tex(e, "image", display_cur);
+		while (gs_effect_loop(e, "Draw"))
 			gs_draw_sprite(display_cur, 0, cx, cy);
 	}
 
