@@ -1,5 +1,5 @@
 <#
-    build-installer.ps1 — build the plugin and produce a Windows installer (.exe)
+    build-installer.ps1 - build the plugin and produce a Windows installer (.exe)
 
     Prerequisites:
       * The project has been configured once:  cmake --preset windows-x64
@@ -8,6 +8,9 @@
     Usage (from the repo root or anywhere):
       powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
       # optional: -Configuration Release   (default: RelWithDebInfo)
+
+    NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads a BOM-less
+    script as the system ANSI code page, so non-ASCII text corrupts parsing.
 #>
 [CmdletBinding()]
 param(
@@ -24,7 +27,7 @@ Set-Location $Root
 $spec = Get-Content -Raw -Encoding UTF8 (Join-Path $Root 'buildspec.json') | ConvertFrom-Json
 $version = $spec.version
 if ([string]::IsNullOrWhiteSpace($version)) { throw "version missing in buildspec.json" }
-Write-Host "NTSC Snow installer build — version $version ($Configuration)" -ForegroundColor Cyan
+Write-Host "NTSC Snow installer build - version $version ($Configuration)" -ForegroundColor Cyan
 
 # --- build + install tree -------------------------------------------------
 Write-Host "==> cmake --build" -ForegroundColor Green
@@ -61,9 +64,9 @@ function Find-ISCC {
 $iscc = Find-ISCC
 if (-not $iscc) {
     Write-Host ""
-    Write-Warning "Inno Setup (ISCC.exe) が見つかりません。"
-    Write-Host    "  無料版をインストールしてください: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
-    Write-Host    "  インストール後、この scripts をもう一度実行してください。" -ForegroundColor Yellow
+    Write-Warning "Inno Setup compiler (ISCC.exe) not found."
+    Write-Host    "  Install the free Inno Setup 6: https://jrsoftware.org/isdl.php" -ForegroundColor Yellow
+    Write-Host    "  Then run this script again." -ForegroundColor Yellow
     exit 1
 }
 Write-Host "==> ISCC: $iscc" -ForegroundColor Green
@@ -78,5 +81,5 @@ if (Test-Path $out) {
     Write-Host ""
     Write-Host "DONE: $out" -ForegroundColor Cyan
 } else {
-    Write-Warning "ISCC は成功しましたが、想定の出力が見つかりません: $out"
+    Write-Warning "ISCC reported success but the expected output was not found: $out"
 }

@@ -1,4 +1,4 @@
-; NTSC Snow — OBS plugin installer (Inno Setup 6)
+; NTSC Snow - OBS plugin installer (Inno Setup 6)
 ;
 ; Installs the plugin into an existing OBS Studio installation:
 ;   ntsc-snow.dll -> <OBS>\obs-plugins\64bit\
@@ -73,9 +73,10 @@ begin
   Result := True;
   if CurPageID = wpSelectDir then begin
     if not FileExists(ExpandConstant('{app}\bin\64bit\obs64.exe')) then begin
-      if MsgBox('選択したフォルダに obs64.exe が見つかりません。OBS Studio のインストール先を' + #13#10 +
-                '指定してください（例: C:\Program Files\obs-studio）。' + #13#10#13#10 +
-                'このまま続けますか？ / obs64.exe was not found here. Continue anyway?',
+      if MsgBox('obs64.exe was not found in this folder.' + #13#10 +
+                'Please select your OBS Studio install folder' + #13#10 +
+                '(e.g. C:\Program Files\obs-studio).' + #13#10#13#10 +
+                'Continue anyway?',
                 mbConfirmation, MB_YESNO) = IDNO then
         Result := False;
     end;
