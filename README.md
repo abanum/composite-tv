@@ -68,6 +68,28 @@ cmake --build --preset ubuntu-x86_64
 > CI（GitHub Actions）用のワークフローもテンプレート由来で同梱しています。
 > リポジトリを GitHub へ push すると Windows / macOS / Linux 向けの配布物を自動生成できます。
 
+### インストーラ (Windows)
+
+手動コピーの代わりに、**ワンクリックのインストーラ (.exe)** を作れます。
+
+**作る側（要 [Inno Setup 6](https://jrsoftware.org/isdl.php)・無料）:**
+
+```powershell
+cmake --preset windows-x64          # 未構成のときだけ
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
+```
+
+`release\ntsc-snow-<version>-windows-x64.exe` が生成されます（ビルド → `cmake --install`
+→ Inno Setup コンパイルまで自動）。
+
+**使う側（エンドユーザー）:** その `.exe` をダブルクリック。OBS のインストール先を
+自動検出して `obs-plugins\64bit\ntsc-snow.dll` と `data\obs-plugins\ntsc-snow\` を配置します
+（見つからなければ手動でフォルダ選択）。インストール後 OBS を（再）起動してください。
+アンインストールは「アプリと機能」または同梱のアンインストーラから。
+
+> 署名していないため、初回は SmartScreen の警告が出ることがあります。
+> 「**詳細情報 → 実行**」で進めてください。OBS 起動中は上書きできないので閉じてから実行します。
+
 ## 使い方
 
 1. OBS で任意のソースを右クリック →「フィルタ」。
@@ -170,6 +192,21 @@ cmake --build --preset windows-x64 --config RelWithDebInfo
 
 Copy the resulting module and its `data/` folder into your OBS plugins directory, then add
 the **NTSC Snow** effect filter to any source.
+
+### Windows installer
+
+Instead of copying files by hand you can build a one-click installer. With
+[Inno Setup 6](https://jrsoftware.org/isdl.php) installed:
+
+```powershell
+cmake --preset windows-x64          # first time only
+powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
+```
+
+This produces `release\ntsc-snow-<version>-windows-x64.exe`. Double-clicking it detects the
+OBS install directory and places `ntsc-snow.dll` and the `data` folder in the right spots; an
+uninstaller is registered. The build is unsigned, so SmartScreen may warn — choose
+"More info → Run anyway", and close OBS before installing.
 
 ### Applying to the whole picture
 
