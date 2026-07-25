@@ -78,6 +78,13 @@ uniform float flagging;           // top-of-picture horizontal bend
 uniform float head_switch;        // VHS head-switching tear at the bottom
 uniform float dropout;            // tape dropout streaks
 
+// Degauss (demagnetising coil): a decaying AC field warps the beam and
+// briefly ruins purity. All zero = inactive, which is the normal path.
+uniform float degauss_wob;        // geometric ripple amount
+uniform float degauss_conv;       // R/B misconvergence offset [uv]
+uniform float degauss_tint;       // rainbow purity blotches
+uniform float degauss_phase;      // oscillation phase [rad]
+
 // Power on/off animation
 uniform float warmup;             // 0: dark .. 1: full brightness
 uniform float collapse_v;         // 1: normal .. 0: collapsed to a horizontal line
@@ -411,7 +418,19 @@ float3 sampleLine(int lineIndex, float x)
 	float3 pb = field_prev.Sample(linearClamp, float2(x + dx, row)).rgb;
 	float3 prev = (pa + pb) * 0.5;
 
-	return lerp(prev, cur, useCur);
+	float3 outCol = lerp(prev, cur, useCur);
+
+	// Degauss misconvergence: the residual field pulls the red and blue beams
+	// apart, and worse away from the centre - just like a real purity error.
+	if (degauss_conv > 0.0) {
+		float2 c = float2(x - 0.5, (float)lineIndex / max(active_lines, 1.0) - 0.5);
+		float off = degauss_conv * (0.3 + length(c));
+		float3 l = image.Sample(linearClamp, float2(x - off, row)).rgb;
+		float3 r = image.Sample(linearClamp, float2(x + off, row)).rgb;
+		outCol = float3(r.r, outCol.g, l.b);
+	}
+
+	return outCol;
 }
 
 float4 PSDisplay(VertData v) : TARGET
@@ -425,6 +444,14 @@ float4 PSDisplay(VertData v) : TARGET
 		suv.x = (v.uv.x - 0.5) * (out_aspect / screen_aspect) + 0.5;
 	else
 		suv.y = (v.uv.y - 0.5) * (screen_aspect / out_aspect) + 0.5;
+
+	// Degauss: the decaying AC field deflects the beam, so the whole raster
+	// ripples and breathes for about a second.
+	if (degauss_wob > 0.0) {
+		suv.x += degauss_wob * 0.020 * sin(suv.y * 18.0 - degauss_phase * 2.0);
+		suv.y += degauss_wob * 0.004 * sin(suv.x * 11.0 + degauss_phase * 1.7);
+		suv = (suv - 0.5) * (1.0 + degauss_wob * 0.010) + 0.5;
+	}
 
 	float2 uv = curve(suv, curvature);
 	float2 lo = step(float2(0.0, 0.0), uv);
@@ -491,6 +518,16 @@ float4 PSDisplay(VertData v) : TARGET
 	float2 vg = suv * 2.0 - 1.0;
 	float vig = 1.0 - vignette * dot(vg, vg) * 0.55;
 	col *= clamp(vig, 0.0, 1.0);
+
+	// Degauss purity error: slow rainbow blotches, strongest towards the edges.
+	if (degauss_tint > 0.0) {
+		float2 q = suv * 3.0;
+		float a = sin(q.x * 2.1 + degauss_phase) + sin(q.y * 1.7 - degauss_phase * 1.3) +
+			  sin((q.x + q.y) * 1.3 + degauss_phase * 0.7);
+		float3 tint = 0.5 + 0.5 * cos(6.2831853 * (a * 0.15 + float3(0.0, 0.33, 0.67)));
+		float edge = 0.35 + dot(vg, vg) * 0.65;
+		col = lerp(col, col * tint * 1.6, saturate(degauss_tint * edge));
+	}
 
 	// Collapse band + discharge flash.
 	col *= bandMask;

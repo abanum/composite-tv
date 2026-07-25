@@ -201,6 +201,10 @@ void ntsc_dock_register(void)
 	/* momentary glitch burst */
 	QPushButton *glitch = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Glitch")));
 	layout->addWidget(glitch);
+
+	/* degauss coil (picture ripple + boing) */
+	QPushButton *degauss = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Degauss")));
+	layout->addWidget(degauss);
 	layout->addStretch(1);
 
 	populate(vid_combo, FILTER_ID);
@@ -243,6 +247,12 @@ void ntsc_dock_register(void)
 
 	QObject::connect(glitch, &QPushButton::clicked,
 			 [vid_combo]() { bump_filter_int(vid_combo->currentText(), FILTER_ID, "glitch_pulse"); });
+
+	/* Degauss drives picture and sound together. */
+	QObject::connect(degauss, &QPushButton::clicked, [vid_combo, aud_combo]() {
+		bump_filter_int(vid_combo->currentText(), FILTER_ID, "degauss_pulse");
+		bump_filter_int(aud_combo->currentText(), AUDIO_FILTER_ID, "degauss_pulse");
+	});
 
 	sync();
 

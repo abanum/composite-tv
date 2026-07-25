@@ -117,6 +117,14 @@ struct ntsc_snow {
 	float burst;          /* 1 -> 0 momentary glitch envelope */
 	long long glitch_pulse; /* bumped by the dock to fire a burst */
 	obs_hotkey_id glitch_hotkey;
+
+	/* degauss */
+	float degauss_len;
+	float degauss_strength;
+	float degauss;        /* 1 -> 0 envelope */
+	double degauss_phase;
+	long long degauss_pulse;
+	obs_hotkey_id degauss_hotkey;
 };
 
 /* ---- small effect-parameter setters ---------------------------------- */
@@ -278,11 +286,19 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->beat_freq = (float)obs_data_get_double(s, "beat_freq");
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
+	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
+	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
+
 	/* The dock fires a burst by incrementing this counter. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
 	if (pulse != f->glitch_pulse) {
 		f->glitch_pulse = pulse;
 		f->burst = 1.0f;
+	}
+	long long dpulse = obs_data_get_int(s, "degauss_pulse");
+	if (dpulse != f->degauss_pulse) {
+		f->degauss_pulse = dpulse;
+		f->degauss = 1.0f;
 	}
 }
 
@@ -297,6 +313,17 @@ static void ntsc_glitch_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotke
 	f->burst = 1.0f;
 }
 
+/* Hotkey: run the degauss coil. */
+static void ntsc_degauss_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct ntsc_snow *f = data;
+	f->degauss = 1.0f;
+}
+
 static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ntsc_snow *f = bzalloc(sizeof(struct ntsc_snow));
@@ -304,6 +331,9 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	f->glitch_hotkey = obs_hotkey_register_source(source, "ntsc_snow.glitch",
 						      obs_module_text("NTSCSnow.Hotkey.Glitch"),
 						      ntsc_glitch_hotkey, f);
+	f->degauss_hotkey = obs_hotkey_register_source(source, "ntsc_snow.degauss",
+						       obs_module_text("NTSCSnow.Hotkey.Degauss"),
+						       ntsc_degauss_hotkey, f);
 
 	char *path = obs_module_file("effects/ntsc-snow.effect");
 	obs_enter_graphics();
@@ -336,6 +366,8 @@ static void ntsc_destroy(void *data)
 	struct ntsc_snow *f = data;
 	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->glitch_hotkey);
+	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->degauss_hotkey);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);
@@ -450,6 +482,13 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "flagging", clampf(on * f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(on * f->head_switch + b * 0.5f, 0.0f, 2.0f));
 	set_f(e, "dropout", clampf(on * f->dropout + b * 0.6f, 0.0f, 2.0f));
+
+	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
+	const float dg = f->degauss * f->degauss * f->degauss_strength;
+	set_f(e, "degauss_wob", dg);
+	set_f(e, "degauss_conv", dg * 0.010f);
+	set_f(e, "degauss_tint", dg);
+	set_f(e, "degauss_phase", (float)f->degauss_phase);
 }
 
 static void ntsc_render(void *data, gs_effect_t *unused)
@@ -507,6 +546,15 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
+
+	/* degauss: decaying AC through the coil */
+	if (f->degauss > 0.0f) {
+		float dlen = f->degauss_len > 0.05f ? f->degauss_len : 1.2f;
+		f->degauss -= dt / dlen;
+		if (f->degauss < 0.0f)
+			f->degauss = 0.0f;
+		f->degauss_phase = fmod(f->degauss_phase + 2.0 * NS_PI * 9.0 * dt, 2.0 * NS_PI);
+	}
 
 	gs_effect_t *e = f->effect;
 
@@ -637,6 +685,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
 	obs_properties_add_float_slider(p, "overscan", obs_module_text("NTSCSnow.Overscan"), 0.0, 0.08, 0.005);
+	obs_properties_add_float_slider(p, "degauss_len", obs_module_text("NTSCSnow.DegaussLen"), 0.3, 3.0, 0.1);
+	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("NTSCSnow.DegaussStrength"), 0.0, 1.0,
+					0.01);
 
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
@@ -684,6 +735,8 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "curvature", 0.025);
 	obs_data_set_default_double(s, "vignette", 0.30);
 	obs_data_set_default_double(s, "overscan", 0.02);
+	obs_data_set_default_double(s, "degauss_len", 1.2);
+	obs_data_set_default_double(s, "degauss_strength", 0.7);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
 	obs_data_set_default_double(s, "ghost_gain", 0.0);

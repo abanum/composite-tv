@@ -57,6 +57,12 @@ struct ntsc_audio {
 
 	double ic_phase; /* intercarrier oscillator phase */
 	float master;    /* smoothed power gain (0..1)    */
+
+	/* degauss "boing" */
+	float degauss;   /* 1 -> 0 envelope */
+	double dg_phase; /* low hum phase   */
+	long long degauss_pulse;
+	obs_hotkey_id degauss_hotkey;
 };
 
 /* ---- helpers --------------------------------------------------------- */
@@ -122,12 +128,35 @@ static void na_update(void *data, obs_data_t *s)
 	f->intercarrier = (float)obs_data_get_double(s, "intercarrier");
 	f->powered = obs_data_get_bool(s, "power");
 	na_recalc_coeffs(f);
+
+	/* The dock fires the degauss sound by incrementing this counter. */
+	long long dpulse = obs_data_get_int(s, "degauss_pulse");
+	if (dpulse != f->degauss_pulse) {
+		f->degauss_pulse = dpulse;
+		f->degauss = 1.0f;
+		f->dg_phase = 0.0;
+	}
+}
+
+/* Hotkey: sound the degauss coil. */
+static void na_degauss_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct ntsc_audio *f = data;
+	f->degauss = 1.0f;
+	f->dg_phase = 0.0;
 }
 
 static void *na_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ntsc_audio *f = bzalloc(sizeof(struct ntsc_audio));
 	f->source = source;
+	f->degauss_hotkey = obs_hotkey_register_source(source, "ntsc_snow_audio.degauss",
+						       obs_module_text("NTSCSnow.Hotkey.Degauss"),
+						       na_degauss_hotkey, f);
 	f->sample_rate = 48000.0;
 	for (int c = 0; c < NA_MAX_CH; c++)
 		f->prng[c] = 0x9e3779b9u ^ (uint32_t)(c * 2654435761u + 12345u);
@@ -139,7 +168,10 @@ static void *na_create(obs_data_t *settings, obs_source_t *source)
 
 static void na_destroy(void *data)
 {
-	bfree(data);
+	struct ntsc_audio *f = data;
+	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->degauss_hotkey);
+	bfree(f);
 }
 
 static struct obs_audio_data *na_filter_audio(void *data, struct obs_audio_data *audio)
@@ -168,11 +200,27 @@ static struct obs_audio_data *na_filter_audio(void *data, struct obs_audio_data 
 	const double dt = 1.0 / f->sample_rate;
 	const float gcoef = (float)(dt / (0.03 + dt)); /* ~30 ms power ramp */
 
+	/* Degauss "boing": a low hum at 55 Hz with its octave, decaying fast. */
+	const double dg_dphase = NA_TWO_PI * 55.0 / f->sample_rate;
+	const float dg_decay = (float)(dt / 0.35);
+
 	for (uint32_t i = 0; i < frames; i++) {
 		float ic = (float)sin(f->ic_phase);
 		f->ic_phase += dphase;
 		if (f->ic_phase > NA_TWO_PI)
 			f->ic_phase -= NA_TWO_PI;
+
+		float boing = 0.0f;
+		if (f->degauss > 0.0f) {
+			float env = f->degauss * f->degauss;
+			boing = (float)(sin(f->dg_phase) * 0.6 + sin(f->dg_phase * 2.0) * 0.3) * env * vol;
+			f->dg_phase += dg_dphase;
+			if (f->dg_phase > NA_TWO_PI)
+				f->dg_phase -= NA_TWO_PI;
+			f->degauss -= dg_decay;
+			if (f->degauss < 0.0f)
+				f->degauss = 0.0f;
+		}
 
 		f->master += (target - f->master) * gcoef;
 		float m = f->master;
@@ -189,7 +237,7 @@ static struct obs_audio_data *na_filter_audio(void *data, struct obs_audio_data 
 			f->lp_y1[c] += alpha * (hp - f->lp_y1[c]);
 			float hiss = f->lp_y1[c] * 0.25f;
 
-			float out = src * duck + hiss * noise_gain + ic * ic_gain;
+			float out = src * duck + hiss * noise_gain + ic * ic_gain + boing;
 			buf[i] = out * m;
 		}
 	}

@@ -161,6 +161,23 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 - **VHS 再生**: ヘッドスイッチング 0.5 / ドロップアウト 0.3 / フラッギング 0.4
 - **チャンネル調整中**: 垂直ロール 0.3 / 帰線帯 12 / 干渉ビート 0.15
 
+### 消磁（デガウス）
+
+実機のブラウン管が電源投入時に「ボーン」と鳴って画面が一瞬うねる、あの動作です。
+消磁コイルに流れる**減衰する交流**をモデル化しており、次の3つが同時に起きて約1秒で収まります。
+
+- 画面全体が数回**うねる**（ビームが磁界で振られる）
+- 赤と青が左右にずれる**ミスコンバージェンス**（周辺ほど強い）
+- 周辺に**虹色の色ムラ**（純度エラー）が浮いて消える
+
+**発動方法:**
+- ドックの「**消磁**」ボタン（映像と音が同時に発動）
+- 設定 → ホットキー の「**NTSC 砂嵐: 消磁**」「**NTSC 音声: 消磁**」
+  （**同じキーを両方に割り当てる**と、キー一発で映像と音が揃って発動します）
+
+**調整:** 「消磁の長さ」（0.3〜3.0秒）と「消磁の強さ」（0〜1）。派手にするなら 2.0秒／1.0、
+控えめなら 0.5秒／0.3 あたり。消磁していない間は処理をスキップするので**負荷は増えません**。
+
 ### 試すと分かりやすい設定
 
 - **電界強度**をゆっくり下げると、カラー映像 → ざらつき → 白黒の砂嵐へ連続的に遷移します。
@@ -253,6 +270,14 @@ gives a leading ghost), an **interference beat** (herringbone plus rainbow cross
 **vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
 bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Glitch!** button
 and the *NTSC Snow: trigger glitch* hotkey fire a momentary burst that settles on its own.
+
+### Degauss
+
+The dock's **Degauss** button (or the *NTSC Snow: degauss* / *NTSC Audio: degauss* hotkeys)
+runs the demagnetising coil: a decaying AC field ripples the raster, pulls red and blue apart
+worse towards the edges, floats rainbow purity blotches over the picture, and sounds the
+low "boing" — all settling in about a second. Length and strength are adjustable, and the
+whole path is skipped when idle, so it costs nothing the rest of the time.
 
 ### Audio
 
