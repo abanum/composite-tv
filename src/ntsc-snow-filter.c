@@ -488,7 +488,9 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		if (f->burst < 0.0f)
 			f->burst = 0.0f;
 	}
-	float roll_speed = (f->glitch_enable ? f->v_roll_speed : 0.0f) + f->burst * 1.5f;
+	/* The burst kicks the vertical hold hard so the picture visibly tumbles
+	 * (several screens over the burst) before it re-locks. */
+	float roll_speed = (f->glitch_enable ? f->v_roll_speed : 0.0f) + f->burst * 6.0f;
 	if (roll_speed != 0.0f) {
 		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt,
 				     (double)ACTIVE_LINES);
@@ -501,7 +503,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 			p -= ACTIVE_LINES;
 		else if (p < -half)
 			p += ACTIVE_LINES;
-		p *= exp(-(double)dt / 0.25); /* ~250 ms settle */
+		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
 		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
