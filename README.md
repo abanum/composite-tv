@@ -74,6 +74,28 @@ cmake --build --preset ubuntu-x86_64
 2. エフェクトフィルタに「**NTSC 砂嵐 (NTSC Snow)**」を追加。
 3. パラメータを調整します。
 
+### 画面全体（シーン）に適用する
+
+OBS ではシーン自体もソースなので、**シーンにこのフィルタを追加すると、その
+シーンの合成結果全体**（カメラ・オーバーレイ・テキストなどすべて）に NTSC 効果が
+かかります。「最終的な出力にかける」場合はこの方法を使います。
+
+1. ソース一覧の空白を右クリック →「フィルタ」、または対象シーンを選んでフィルタを開く。
+   （シーンのフィルタは、シーンを選択した状態で「フィルタ」から開けます）
+2. エフェクトフィルタに「**NTSC 砂嵐**」を追加。
+
+> **全シーン共通にしたいとき（マスターシーン方式）**
+> 「マスター」シーンを 1 つ作り、その中に他のシーンを**シーンソースとして入れ子**で配置し、
+> マスターシーンにフィルタを付けます。マスターを本番シーンとして使えば、中身を差し替えても
+> 常に NTSC 効果がかかります。
+>
+> なお OBS には「エンコード後の最終ミックスそのもの（シーン切替やトランジションを含む
+> 放送出力）」にフィルタを差す仕組みはありません。シーン単位が実質的な最上位です。
+
+**NTSC 砂嵐 ドック**の「対象ソース」ドロップダウンには、フィルタを持つソースに加えて
+**シーンも表示**されるので、シーン全体の砂嵐量や電源もドックからライブ操作できます
+（一覧が古い場合は「更新」を押してください）。
+
 ### 試すと分かりやすい設定
 
 - **電界強度**をゆっくり下げると、カラー映像 → ざらつき → 白黒の砂嵐へ連続的に遷移します。
@@ -133,6 +155,15 @@ cmake --build --preset windows-x64 --config RelWithDebInfo
 
 Copy the resulting module and its `data/` folder into your OBS plugins directory, then add
 the **NTSC Snow** effect filter to any source.
+
+### Applying to the whole picture
+
+A Scene is itself a source, so **adding the filter to a Scene** applies NTSC to the entire
+scene composite (camera, overlays, text — everything). That is the way to "filter the final
+output". For a look shared across all scenes, nest your scenes inside one master scene and
+filter the master. OBS has no way to filter the post-mix broadcast output itself; a scene is
+the effective top level. The dock's target drop-down lists scenes too, so field strength and
+power can be driven live for a whole scene.
 
 ### License
 

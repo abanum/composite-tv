@@ -69,7 +69,9 @@ static void populate_sources(QComboBox *combo)
 	combo->blockSignals(true);
 	combo->clear();
 
-	obs_enum_sources(
+	/* obs_enum_all_sources also lists scenes, so a filter added to a whole
+	 * scene (i.e. the full composited picture) shows up here too. */
+	obs_enum_all_sources(
 		[](void *param, obs_source_t *src) -> bool {
 			auto *cb = static_cast<QComboBox *>(param);
 			if (find_ntsc_filter(src))
