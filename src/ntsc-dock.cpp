@@ -38,23 +38,25 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "ntsc-dock.h"
 
 static const char *FILTER_ID = "ntsc_snow_filter";
+static const char *AUDIO_FILTER_ID = "ntsc_snow_audio";
 
-/* Return the first NTSC Snow filter on a source (borrowed reference, valid
- * only while the parent source reference is held). */
-static obs_source_t *find_ntsc_filter(obs_source_t *src)
+/* Return the first filter with the given id on a source (borrowed reference,
+ * valid only while the parent source reference is held). */
+static obs_source_t *find_filter(obs_source_t *src, const char *id)
 {
 	if (!src)
 		return nullptr;
 
 	struct find_ctx {
+		const char *id;
 		obs_source_t *found;
-	} ctx{nullptr};
+	} ctx{id, nullptr};
 
 	obs_source_enum_filters(
 		src,
 		[](obs_source_t *, obs_source_t *filter, void *param) {
 			auto *c = static_cast<find_ctx *>(param);
-			if (!c->found && strcmp(obs_source_get_id(filter), FILTER_ID) == 0)
+			if (!c->found && strcmp(obs_source_get_id(filter), c->id) == 0)
 				c->found = filter;
 		},
 		&ctx);
@@ -62,38 +64,44 @@ static obs_source_t *find_ntsc_filter(obs_source_t *src)
 	return ctx.found;
 }
 
-/* Add a source to the combo if it has the filter and is not already listed. */
-static void add_if_filtered(QComboBox *combo, obs_source_t *src)
+struct add_ctx {
+	QComboBox *combo;
+	const char *id;
+};
+
+/* Add a source to the combo if it carries the given filter id. */
+static void add_if_filtered(struct add_ctx *a, obs_source_t *src)
 {
-	if (!find_ntsc_filter(src))
+	if (!find_filter(src, a->id))
 		return;
 	QString name = QString::fromUtf8(obs_source_get_name(src));
-	if (combo->findText(name) < 0)
-		combo->addItem(name);
+	if (a->combo->findText(name) < 0)
+		a->combo->addItem(name);
 }
 
-/* Fill the combo box with every source or scene that currently has the filter.
+/* Fill the combo box with every source or scene that has the given filter id.
  * Inputs come from obs_enum_all_sources; scenes are added via obs_enum_scenes
  * so a filter applied to a whole scene (the full composited picture) is listed
  * regardless of how scenes are stored internally. */
-static void populate_sources(QComboBox *combo)
+static void populate(QComboBox *combo, const char *id)
 {
 	QString current = combo->currentText();
 	combo->blockSignals(true);
 	combo->clear();
 
+	struct add_ctx ctx{combo, id};
 	obs_enum_all_sources(
 		[](void *param, obs_source_t *src) -> bool {
-			add_if_filtered(static_cast<QComboBox *>(param), src);
+			add_if_filtered(static_cast<add_ctx *>(param), src);
 			return true;
 		},
-		combo);
+		&ctx);
 	obs_enum_scenes(
 		[](void *param, obs_source_t *src) -> bool {
-			add_if_filtered(static_cast<QComboBox *>(param), src);
+			add_if_filtered(static_cast<add_ctx *>(param), src);
 			return true;
 		},
-		combo);
+		&ctx);
 
 	int idx = combo->findText(current);
 	if (idx >= 0)
@@ -101,16 +109,50 @@ static void populate_sources(QComboBox *combo)
 	combo->blockSignals(false);
 }
 
-/* Invoke fn(filter) for the filter of the named source, managing references. */
-template<typename F> static void with_filter(const QString &name, F fn)
+/* Invoke fn(filter) for the given-id filter of the named source. */
+template<typename F> static void with_filter(const QString &name, const char *id, F fn)
 {
 	obs_source_t *src = obs_get_source_by_name(name.toUtf8().constData());
 	if (!src)
 		return;
-	obs_source_t *filter = find_ntsc_filter(src);
+	obs_source_t *filter = find_filter(src, id);
 	if (filter)
 		fn(filter);
 	obs_source_release(src);
+}
+
+/* Read a bool setting from the given-id filter of the named source. */
+static bool get_filter_bool(const QString &name, const char *id, const char *key, bool fallback)
+{
+	bool result = fallback;
+	with_filter(name, id, [&](obs_source_t *filter) {
+		obs_data_t *s = obs_source_get_settings(filter);
+		result = obs_data_get_bool(s, key);
+		obs_data_release(s);
+	});
+	return result;
+}
+
+/* Set a double setting on the given-id filter of the named source. */
+static void set_filter_double(const QString &name, const char *id, const char *key, double value)
+{
+	with_filter(name, id, [&](obs_source_t *filter) {
+		obs_data_t *s = obs_source_get_settings(filter);
+		obs_data_set_double(s, key, value);
+		obs_source_update(filter, s);
+		obs_data_release(s);
+	});
+}
+
+/* Set a bool setting on the given-id filter of the named source. */
+static void set_filter_bool(const QString &name, const char *id, const char *key, bool value)
+{
+	with_filter(name, id, [&](obs_source_t *filter) {
+		obs_data_t *s = obs_source_get_settings(filter);
+		obs_data_set_bool(s, key, value);
+		obs_source_update(filter, s);
+		obs_data_release(s);
+	});
 }
 
 void ntsc_dock_register(void)
@@ -118,33 +160,40 @@ void ntsc_dock_register(void)
 	QWidget *root = new QWidget();
 	QVBoxLayout *layout = new QVBoxLayout(root);
 
-	/* target source selector */
-	QHBoxLayout *src_row = new QHBoxLayout();
-	QLabel *src_label = new QLabel(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Source")));
-	QComboBox *combo = new QComboBox();
-	QPushButton *refresh = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Refresh")));
-	src_row->addWidget(src_label);
-	src_row->addWidget(combo, 1);
-	src_row->addWidget(refresh);
-	layout->addLayout(src_row);
+	/* video target selector */
+	QHBoxLayout *vid_row = new QHBoxLayout();
+	vid_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Source"))));
+	QComboBox *vid_combo = new QComboBox();
+	vid_row->addWidget(vid_combo, 1);
+	layout->addLayout(vid_row);
 
-	/* power button */
+	/* audio target selector */
+	QHBoxLayout *aud_row = new QHBoxLayout();
+	aud_row->addWidget(new QLabel(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.AudioSource"))));
+	QComboBox *aud_combo = new QComboBox();
+	QPushButton *refresh = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.Refresh")));
+	aud_row->addWidget(aud_combo, 1);
+	aud_row->addWidget(refresh);
+	layout->addLayout(aud_row);
+
+	/* power button (drives both picture and sound) */
 	QPushButton *power = new QPushButton(QString::fromUtf8(obs_module_text("NTSCSnow.Dock.PowerOff")));
 	layout->addWidget(power);
 
-	/* field-strength slider */
-	QLabel *fs_label = new QLabel(QString::fromUtf8(obs_module_text("NTSCSnow.FieldStrength")));
+	/* field-strength slider (drives both picture and sound) */
+	layout->addWidget(new QLabel(QString::fromUtf8(obs_module_text("NTSCSnow.FieldStrength"))));
 	QSlider *slider = new QSlider(Qt::Horizontal);
 	slider->setRange(0, 100);
 	slider->setValue(100);
-	layout->addWidget(fs_label);
 	layout->addWidget(slider);
 	layout->addStretch(1);
 
-	populate_sources(combo);
+	populate(vid_combo, FILTER_ID);
+	populate(aud_combo, AUDIO_FILTER_ID);
 
-	auto sync_from_filter = [combo, slider, power]() {
-		with_filter(combo->currentText(), [&](obs_source_t *filter) {
+	/* reflect the video target's current values in the widgets */
+	auto sync = [vid_combo, slider, power]() {
+		with_filter(vid_combo->currentText(), FILTER_ID, [&](obs_source_t *filter) {
 			obs_data_t *s = obs_source_get_settings(filter);
 			slider->blockSignals(true);
 			slider->setValue((int)(obs_data_get_double(s, "field_strength") * 100.0 + 0.5));
@@ -156,36 +205,28 @@ void ntsc_dock_register(void)
 		});
 	};
 
-	QObject::connect(refresh, &QPushButton::clicked, [combo, sync_from_filter]() {
-		populate_sources(combo);
-		sync_from_filter();
+	QObject::connect(refresh, &QPushButton::clicked, [vid_combo, aud_combo, sync]() {
+		populate(vid_combo, FILTER_ID);
+		populate(aud_combo, AUDIO_FILTER_ID);
+		sync();
+	});
+	QObject::connect(vid_combo, &QComboBox::currentTextChanged, [sync](const QString &) { sync(); });
+
+	QObject::connect(slider, &QSlider::valueChanged, [vid_combo, aud_combo](int val) {
+		double fs = val / 100.0;
+		set_filter_double(vid_combo->currentText(), FILTER_ID, "field_strength", fs);
+		set_filter_double(aud_combo->currentText(), AUDIO_FILTER_ID, "field_strength", fs);
 	});
 
-	QObject::connect(combo, &QComboBox::currentTextChanged,
-			 [sync_from_filter](const QString &) { sync_from_filter(); });
-
-	QObject::connect(slider, &QSlider::valueChanged, [combo](int val) {
-		with_filter(combo->currentText(), [&](obs_source_t *filter) {
-			obs_data_t *s = obs_source_get_settings(filter);
-			obs_data_set_double(s, "field_strength", val / 100.0);
-			obs_source_update(filter, s);
-			obs_data_release(s);
-		});
+	QObject::connect(power, &QPushButton::clicked, [vid_combo, aud_combo, power]() {
+		bool next = !get_filter_bool(vid_combo->currentText(), FILTER_ID, "power", true);
+		set_filter_bool(vid_combo->currentText(), FILTER_ID, "power", next);
+		set_filter_bool(aud_combo->currentText(), AUDIO_FILTER_ID, "power", next);
+		power->setText(QString::fromUtf8(
+			obs_module_text(next ? "NTSCSnow.Dock.PowerOff" : "NTSCSnow.Dock.PowerOn")));
 	});
 
-	QObject::connect(power, &QPushButton::clicked, [combo, power]() {
-		with_filter(combo->currentText(), [&](obs_source_t *filter) {
-			obs_data_t *s = obs_source_get_settings(filter);
-			bool on = !obs_data_get_bool(s, "power");
-			obs_data_set_bool(s, "power", on);
-			obs_source_update(filter, s);
-			obs_data_release(s);
-			power->setText(QString::fromUtf8(
-				obs_module_text(on ? "NTSCSnow.Dock.PowerOff" : "NTSCSnow.Dock.PowerOn")));
-		});
-	});
-
-	sync_from_filter();
+	sync();
 
 	obs_frontend_add_dock_by_id("ntsc_snow_dock", obs_module_text("NTSCSnow.Dock"), root);
 }

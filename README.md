@@ -92,9 +92,24 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 > なお OBS には「エンコード後の最終ミックスそのもの（シーン切替やトランジションを含む
 > 放送出力）」にフィルタを差す仕組みはありません。シーン単位が実質的な最上位です。
 
-**NTSC 砂嵐 ドック**の「対象ソース」ドロップダウンには、フィルタを持つソースに加えて
+**NTSC 砂嵐 ドック**の「映像ソース」ドロップダウンには、フィルタを持つソースに加えて
 **シーンも表示**されるので、シーン全体の砂嵐量や電源もドックからライブ操作できます
 （一覧が古い場合は「更新」を押してください）。
+
+### 音声（TV スピーカー音）
+
+無信号時の「サー」というノイズや、映像時の弱いインターキャリア音は、**独立した
+音声フィルタ「NTSC 音声」**で再現します。映像フィルタは映像ソースに付いていて音声を
+持たないため、音声は別途、音を出すソースに付けます。
+
+1. 音を出したいソース（**マイク**／**デスクトップ音声**など）を右クリック →「フィルタ」。
+2. **音声フィルタ**に「**NTSC 音声**」を追加。
+3. ドックで「**音声ソース**」にそのソースを選ぶと、**電界強度スライダー・電源ボタンが
+   映像と音声の両方を同時に制御**します。
+
+電界強度を下げるほど元の音声がダッキング（小さく）され、砂嵐のサー音が大きくなり、
+「声 → 砂嵐」へ連続的にフェードします。音量・インターキャリア音はフィルタのプロパティで
+個別に調整できます。
 
 ### 試すと分かりやすい設定
 
@@ -164,6 +179,14 @@ output". For a look shared across all scenes, nest your scenes inside one master
 filter the master. OBS has no way to filter the post-mix broadcast output itself; a scene is
 the effective top level. The dock's target drop-down lists scenes too, so field strength and
 power can be driven live for a whole scene.
+
+### Audio
+
+The no-signal hiss and faint intercarrier tone are a **separate "NTSC Audio" filter** (the
+video filter sits on a video source that carries no audio). Add it to an audio-producing
+source (mic, desktop audio), then pick that source under the dock's **Audio source**: the one
+field-strength slider and power button now drive both picture and sound, ducking the source
+audio into full static as field strength falls.
 
 ### License
 

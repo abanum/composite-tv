@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+NTSC Snow — audio filter
+Copyright (C) 2026
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -16,26 +16,8 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
+#pragma once
+
 #include <obs-module.h>
-#include <plugin-support.h>
 
-#include "ntsc-snow-filter.h"
-#include "ntsc-snow-audio.h"
-#include "ntsc-dock.h"
-
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
-
-bool obs_module_load(void)
-{
-	obs_register_source(&ntsc_snow_filter_info);
-	obs_register_source(&ntsc_snow_audio_filter_info);
-	ntsc_dock_register();
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r9-audio] (version %s)", PLUGIN_VERSION);
-	return true;
-}
-
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
-}
+extern struct obs_source_info ntsc_snow_audio_filter_info;
