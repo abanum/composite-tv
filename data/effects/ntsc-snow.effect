@@ -7,7 +7,7 @@
  *   Encode : source RGB -> YIQ -> band-limit (Y/I/Q) -> 3.58 MHz modulation
  *   Detect : Rician envelope detection of the carrier + band-limited complex
  *            Gaussian IF noise. field_strength=1 -> clean, 0 -> pure Rayleigh snow.
- *   Decode : Y/C separation (bandpass / 2-line comb / 3-line comb) + synchronous
+ *   Decode : Y/C separation (bandpass / 2-ln comb / 3-ln comb) + synchronous
  *            chroma demodulation, YIQ -> RGB.
  *   Display: interlaced weave of two temporally offset fields, beam spot, phosphor
  *            persistence, scanlines, screen curvature and vignette.
@@ -22,7 +22,7 @@ uniform texture2d image;          // primary input of the current pass
 uniform texture2d field_prev;     // Display: previous decoded field (interlace)
 uniform texture2d display_prev;   // Display: previous final frame (persistence)
 
-uniform float2 field_size;        // (active samples per line, active lines per field)
+uniform float2 field_size;        // (active samples per ln, active lines per field)
 uniform float2 output_size;       // (cx, cy) of the rendered output
 
 // Encode
@@ -49,7 +49,7 @@ uniform float chroma_gain;        // decoder chroma gain (0 = colour killed)
 uniform float chroma_phase;       // local oscillator phase [rad]
 uniform float contrast;
 uniform float brightness;
-uniform float yc_mode;            // 0: bandpass, 1: 2-line comb, 2: 3-line comb
+uniform float yc_mode;            // 0: bandpass, 1: 2-ln comb, 2: 3-ln comb
 
 // Display
 uniform float active_lines;       // active lines per frame (2 * field lines)
@@ -62,7 +62,7 @@ uniform float scanline;
 uniform float curvature;
 uniform float vignette;
 uniform float overscan;
-uniform float pixels_per_line;    // output pixels per active line
+uniform float pixels_per_line;    // output pixels per active ln
 
 #define PI 3.141592653589793
 
@@ -140,9 +140,9 @@ float3 sampleRGB(float sx, float row)
 float4 PSEncode(VertData v) : TARGET
 {
 	int   n    = (int)floor(v.uv.x * field_size.x);
-	int   line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	int   ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
 	float du   = 1.0 / field_size.x;
-	float row  = ((float)line + 0.5) / field_size.y;
+	float row  = ((float)ln + 0.5) / field_size.y;
 
 	float y = 0.0;
 	float ci = 0.0;
@@ -172,7 +172,7 @@ float4 PSEncode(VertData v) : TARGET
 	ci /= max(ni, 1.0e-6);
 	cq /= max(nq, 1.0e-6);
 
-	float linePhase = field_base_phase + ((fmod((float)line, 2.0) >= 0.5) ? PI : 0.0);
+	float linePhase = field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
 	float phase = 0.5 * PI * (float)n + linePhase + burst_phase;
 	float composite = y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
 
@@ -194,11 +194,11 @@ float hash13(float3 p3)
 }
 
 // Complex Gaussian white noise (sigma = 1) via Box-Muller, clamped to +/-4.
-float2 noiseIQ(int line, int n)
+float2 noiseIQ(int ln, int n)
 {
 	int w  = (int)field_size.x;
 	int nx = (n < 0) ? n + w : ((n >= w) ? n - w : n);
-	float3 p = float3((float)nx, (float)line, (float)field_seed);
+	float3 p = float3((float)nx, (float)ln, (float)field_seed);
 	float u1 = max(hash13(p), 1.0e-7);
 	float u2 = hash13(p + float3(37.0, 17.0, 5.0));
 	float r  = sqrt(-2.0 * log(u1));
@@ -215,18 +215,18 @@ float lpfTap(int k, float fcn, int radius)
 float4 PSDetect(VertData v) : TARGET
 {
 	int n    = (int)floor(v.uv.x * field_size.x);
-	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	int ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
 
 	float2 noise = float2(0.0, 0.0);
 	float norm = 0.0;
 	for (int k = -TAP_RADIUS; k <= TAP_RADIUS; ++k) {
 		float wgt = lpfTap(k, if_cutoff, TAP_RADIUS);
-		noise += noiseIQ(line, n + k) * wgt;
+		noise += noiseIQ(ln, n + k) * wgt;
 		norm  += wgt * wgt;
 	}
 	noise /= sqrt(max(norm, 1.0e-6));
 
-	float2 base = float2(((float)n + 0.5) / field_size.x, ((float)line + 0.5) / field_size.y);
+	float2 base = float2(((float)n + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
 	float stored = image.Sample(pointClamp, base).r;
 	float composite = (stored - 0.5) / 0.375;
 
@@ -237,7 +237,7 @@ float4 PSDetect(VertData v) : TARGET
 	float env = sqrt(re * re + im * im);
 
 	float videoDetected = (env - field_strength) / max(field_strength, 0.15);
-	float wobble = 1.0 + agc_jitter * (hash13(float3((float)field_seed, (float)line, 7.0)) - 0.5);
+	float wobble = 1.0 + agc_jitter * (hash13(float3((float)field_seed, (float)ln, 7.0)) - 0.5);
 	float snowDetected = 1.0 - env * (snow_level / 1.2533141) * wobble;
 	float detected = lerp(snowDetected, videoDetected, smoothstep(0.0, 0.35, field_strength));
 
@@ -248,10 +248,10 @@ float4 PSDetect(VertData v) : TARGET
 // Decode : Y/C separation + synchronous chroma demodulation -> RGB
 //============================================================================
 
-float compAt(int n, int line)
+float compAt(int n, int ln)
 {
 	int nx = clamp(n, 0, (int)field_size.x - 1);
-	int ny = clamp(line, 0, (int)field_size.y - 1);
+	int ny = clamp(ln, 0, (int)field_size.y - 1);
 	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ny + 0.5) / field_size.y);
 	return image.Sample(pointClamp, uv).r;
 }
@@ -259,7 +259,7 @@ float compAt(int n, int line)
 float4 PSDecode(VertData v) : TARGET
 {
 	int n    = (int)floor(v.uv.x * field_size.x);
-	int line = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
+	int ln = clamp((int)floor(v.uv.y * field_size.y), 0, (int)field_size.y - 1);
 
 	// --- luminance (Y/C separation) ---
 	float luma = 0.0;
@@ -268,17 +268,17 @@ float4 PSDecode(VertData v) : TARGET
 		float wgt = 2.0 * luma_cutoff * sinc(2.0 * luma_cutoff * (float)k) * hamming(k, LUMA_R);
 		float s;
 		if (yc_mode < 0.5)
-			s = compAt(n + k, line);
+			s = compAt(n + k, ln);
 		else if (yc_mode < 1.5)
-			s = 0.5 * (compAt(n + k, line) + compAt(n + k, line - 1));
+			s = 0.5 * (compAt(n + k, ln) + compAt(n + k, ln - 1));
 		else
-			s = 0.25 * (compAt(n + k, line - 1) + 2.0 * compAt(n + k, line) + compAt(n + k, line + 1));
+			s = 0.25 * (compAt(n + k, ln - 1) + 2.0 * compAt(n + k, ln) + compAt(n + k, ln + 1));
 		luma += s * wgt; lnorm += wgt;
 	}
 	luma /= max(lnorm, 1.0e-6);
 
 	// --- chrominance (synchronous detection + post LPF) ---
-	float linePhase = field_base_phase + ((fmod((float)line, 2.0) >= 0.5) ? PI : 0.0);
+	float linePhase = field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
 	float ci = 0.0;
 	float cq = 0.0;
 	float cnorm = 0.0;
@@ -286,11 +286,11 @@ float4 PSDecode(VertData v) : TARGET
 		float wgt = 2.0 * chroma_cutoff * sinc(2.0 * chroma_cutoff * (float)k) * hamming(k, CHROMA_R);
 		float s;
 		if (yc_mode < 0.5)
-			s = compAt(n + k, line);
+			s = compAt(n + k, ln);
 		else if (yc_mode < 1.5)
-			s = 0.5 * (compAt(n + k, line) - compAt(n + k, line - 1));
+			s = 0.5 * (compAt(n + k, ln) - compAt(n + k, ln - 1));
 		else
-			s = compAt(n + k, line) - 0.5 * (compAt(n + k, line - 1) + compAt(n + k, line + 1));
+			s = compAt(n + k, ln) - 0.5 * (compAt(n + k, ln - 1) + compAt(n + k, ln + 1));
 		float ph = 0.5 * PI * (float)(n + k) + linePhase + burst_phase + chroma_phase;
 		ci += s * cos(ph) * wgt;
 		cq += s * sin(ph) * wgt;
@@ -321,7 +321,7 @@ float2 curve(float2 uv, float amount)
 	return c * 0.5 + 0.5;
 }
 
-// Sample a scan line, choosing the current or previous field for the weave.
+// Sample a scan ln, choosing the current or previous field for the weave.
 float3 sampleLine(int lineIndex, float x)
 {
 	float p = fmod((float)lineIndex, 2.0);
