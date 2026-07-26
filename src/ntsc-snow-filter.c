@@ -660,10 +660,36 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 /* ---- properties ------------------------------------------------------ */
 
+/* Called when the properties object is destroyed - that is, when the filter
+ * dialog closes. The inspection zoom is a tool, not a look, so wind it back
+ * rather than leave a magnified picture going out live. A weak reference keeps
+ * this safe if the filter itself was removed while the dialog was open. */
+static void ntsc_props_destroyed(void *param)
+{
+	obs_weak_source_t *weak = param;
+	obs_source_t *src = obs_weak_source_get_source(weak);
+
+	if (src) {
+		obs_data_t *s = obs_source_get_settings(src);
+		if (obs_data_get_double(s, "preview_zoom") != 1.0) {
+			obs_data_set_double(s, "preview_zoom", 1.0);
+			obs_data_set_double(s, "zoom_x", 0.5);
+			obs_data_set_double(s, "zoom_y", 0.5);
+			obs_source_update(src, s);
+		}
+		obs_data_release(s);
+		obs_source_release(src);
+	}
+	obs_weak_source_release(weak);
+}
+
 static obs_properties_t *ntsc_get_properties(void *data)
 {
-	UNUSED_PARAMETER(data);
+	struct ntsc_snow *f = data;
 	obs_properties_t *p = obs_properties_create();
+
+	if (f && f->source)
+		obs_properties_set_param(p, obs_source_get_weak_source(f->source), ntsc_props_destroyed);
 
 	obs_properties_add_text(p, "hint", obs_module_text("NTSCSnow.Hint"), OBS_TEXT_INFO);
 	obs_properties_add_bool(p, "power", obs_module_text("NTSCSnow.Power"));
@@ -719,6 +745,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	/* Inspection aid: magnifies the output, so it must be wound back to 1.0
 	 * before going live - the label says so. */
 	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("NTSCSnow.PreviewZoom"), 1.0, 8.0, 0.1);
+	obs_properties_add_text(p, "zoom_hint", obs_module_text("NTSCSnow.ZoomHint"), OBS_TEXT_INFO);
 	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
 
