@@ -53,7 +53,10 @@ uniform float brightness;
 uniform float yc_mode;            // 0: bandpass, 1: 2-ln comb, 2: 3-ln comb
 
 // Display
-uniform float active_lines;       // active lines per frame (2 * field lines)
+uniform float active_lines;       // drawn scan lines per frame
+uniform float field_row_step;     // field rows advanced per drawn line
+uniform float line_skip;          // 1: blank alternate lines (240p retro look)
+uniform float gap_level;          // brightness left in a skipped gap
 uniform float interlace_on;
 uniform float frame_parity;       // 0 / 1, flips each frame
 uniform float persistence;
@@ -447,7 +450,9 @@ float3 sampleLine(int lineIndex, float x)
 {
 	bool useCur = (interlace_on < 0.5) ||
 		      (abs(fmod((float)lineIndex, 2.0) - frame_parity) < 0.5);
-	float row = (floor((float)lineIndex * 0.5) + 0.5) / field_size.y;
+	// field_row_step maps drawn lines onto field rows: 0.5 for a 486-line frame
+	// (two drawn lines share a row), 1.0 for a 243-line 240p frame.
+	float row = (floor((float)lineIndex * field_row_step) + 0.5) / field_size.y;
 	float dx = spot_h * 0.5 / field_size.x;
 	x += lineShift(lineIndex);
 
@@ -546,9 +551,20 @@ float4 PSDisplay(VertData v) : TARGET
 	}
 	col /= max(wsum, 1.0e-5);
 
-	float visibility = scanline * smoothstep(2.2, 3.0, pixels_per_line);
+	// Scan-line structure can only be drawn when a line spans enough output
+	// pixels; below that it would only alias, so the soft ramp and the hard
+	// line skip fade out together.
+	float lineVisible = smoothstep(2.2, 3.0, pixels_per_line);
 	float phase = frac(lineF);
-	col *= 1.0 - visibility * (0.5 - 0.5 * cos(2.0 * PI *phase));
+	col *= 1.0 - scanline * lineVisible * (0.5 - 0.5 * cos(2.0 * PI * phase));
+
+	// Line skip: the 240p look, where the beam leaves an unlit gap between the
+	// lines. Phase 0 is the beam centre and 0.5 the gap, so blank the middle
+	// half of each cell.
+	if (line_skip > 0.5) {
+		float inGap = (abs(phase - 0.5) < 0.25) ? 1.0 : 0.0;
+		col *= lerp(1.0, gap_level, inGap * lineVisible);
+	}
 
 	// Tape dropout: short bright streaks on random lines.
 	if (dropout > 0.0) {

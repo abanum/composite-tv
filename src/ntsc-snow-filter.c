@@ -91,6 +91,9 @@ struct ntsc_snow {
 	float contrast;
 	float brightness;
 	bool interlace;
+	int scan_lines;      /* drawn lines per frame: 486 / 243 / 162 */
+	bool line_skip;
+	float gap_level;
 	float persistence;
 	float spot_v;
 	float spot_h;
@@ -273,6 +276,12 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->contrast = (float)obs_data_get_double(s, "contrast");
 	f->brightness = (float)obs_data_get_double(s, "brightness");
 	f->interlace = obs_data_get_bool(s, "interlace");
+	f->scan_lines = (int)obs_data_get_int(s, "scan_lines");
+	if (f->scan_lines < 1)
+		f->scan_lines = ACTIVE_LINES;
+	f->line_skip = obs_data_get_bool(s, "line_skip");
+	/* Gate the gap depth here so the render path can just read it. */
+	f->gap_level = f->line_skip ? (float)obs_data_get_double(s, "gap_level") : 1.0f;
 	f->persistence = (float)obs_data_get_double(s, "persistence");
 	f->spot_v = (float)obs_data_get_double(s, "spot_v");
 	f->spot_h = (float)obs_data_get_double(s, "spot_h");
@@ -491,8 +500,14 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
 	/* Display */
-	set_f(e, "active_lines", (float)ACTIVE_LINES);
-	set_f(e, "interlace_on", f->interlace ? 1.0f : 0.0f);
+	const float lines = (float)f->scan_lines;
+	set_f(e, "active_lines", lines);
+	set_f(e, "field_row_step", (float)FIELD_H / lines);
+	set_f(e, "line_skip", f->line_skip ? 1.0f : 0.0f);
+	set_f(e, "gap_level", f->gap_level);
+	/* 240p and below are progressive by definition, so the field weave only
+	 * applies to a full 486-line frame. */
+	set_f(e, "interlace_on", (f->interlace && f->scan_lines == ACTIVE_LINES) ? 1.0f : 0.0f);
 	set_f(e, "frame_parity", (float)(f->field_counter & 1u));
 	set_f(e, "persistence", f->persistence);
 	set_f(e, "spot_v", f->spot_v);
@@ -505,7 +520,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	 * pixels, so the scan-line visibility ramp has to know about it -
 	 * otherwise magnifying would not reveal the lines it exists to show. */
 	const float zoom = f->preview_zoom > 1.0f ? f->preview_zoom : 1.0f;
-	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES * zoom);
+	set_f(e, "pixels_per_line", (float)cy / lines * zoom);
 	set_f(e, "preview_zoom", zoom);
 	set_f(e, "zoom_x", f->zoom_x);
 	set_f(e, "zoom_y", f->zoom_y);
@@ -578,19 +593,21 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	}
 	/* The burst kicks the vertical hold hard so the picture visibly tumbles
 	 * (several screens over the burst) before it re-locks. */
+	/* The roll is measured in scan lines, so one screen is however many lines
+	 * the frame is currently drawn with. */
+	const double frame_lines = (double)f->scan_lines;
 	float roll_speed = f->v_roll_speed + f->burst * 6.0f;
 	if (roll_speed != 0.0f) {
-		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * ACTIVE_LINES * dt,
-				     (double)ACTIVE_LINES);
+		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * frame_lines * dt, frame_lines);
 	} else if (f->v_roll_pos != 0.0) {
 		/* Vertical hold re-locks: slide back to the framed position by the
 		 * shortest way round, then snap once we are within half a line. */
-		const double half = ACTIVE_LINES * 0.5;
-		double p = fmod(f->v_roll_pos, (double)ACTIVE_LINES);
+		const double half = frame_lines * 0.5;
+		double p = fmod(f->v_roll_pos, frame_lines);
 		if (p > half)
-			p -= ACTIVE_LINES;
+			p -= frame_lines;
 		else if (p < -half)
-			p += ACTIVE_LINES;
+			p += frame_lines;
 		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
 		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
@@ -730,6 +747,15 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "contrast", obs_module_text("NTSCSnow.Contrast"), 0.3, 2.0, 0.01);
 	obs_properties_add_float_slider(p, "brightness", obs_module_text("NTSCSnow.Brightness"), -0.3, 0.3, 0.01);
 
+	obs_property_t *sl = obs_properties_add_list(p, "scan_lines", obs_module_text("NTSCSnow.ScanLines"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.486"), 486);
+	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.243"), 243);
+	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.162"), 162);
+
+	obs_properties_add_bool(p, "line_skip", obs_module_text("NTSCSnow.LineSkip"));
+	obs_properties_add_float_slider(p, "gap_level", obs_module_text("NTSCSnow.GapLevel"), 0.0, 1.0, 0.05);
+
 	obs_properties_add_bool(p, "interlace", obs_module_text("NTSCSnow.Interlace"));
 	obs_properties_add_float_slider(p, "persistence", obs_module_text("NTSCSnow.Persistence"), 0.0, 0.75, 0.01);
 	obs_properties_add_float_slider(p, "spot_v", obs_module_text("NTSCSnow.SpotV"), 0.30, 1.60, 0.01);
@@ -787,6 +813,9 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "chroma_drift", 0.6);
 	obs_data_set_default_double(s, "contrast", 1.15);
 	obs_data_set_default_double(s, "brightness", -0.02);
+	obs_data_set_default_int(s, "scan_lines", ACTIVE_LINES);
+	obs_data_set_default_bool(s, "line_skip", false);
+	obs_data_set_default_double(s, "gap_level", 0.15);
 	obs_data_set_default_bool(s, "interlace", true);
 	obs_data_set_default_double(s, "persistence", 0.22);
 	obs_data_set_default_double(s, "spot_v", 0.45);
