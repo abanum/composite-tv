@@ -256,10 +256,6 @@ void ntsc_dock_register(void)
 	aud_row->addWidget(refresh);
 	layout->addLayout(aud_row);
 
-	/* power button (drives both picture and sound) */
-	QPushButton *power = new QPushButton(T("NTSCSnow.Dock.PowerOff"));
-	layout->addWidget(power);
-
 	/* field-strength slider (drives both picture and sound) */
 	layout->addWidget(new QLabel(T("NTSCSnow.FieldStrength")));
 	QSlider *slider = new QSlider(Qt::Horizontal);
@@ -267,13 +263,16 @@ void ntsc_dock_register(void)
 	slider->setValue(100);
 	layout->addWidget(slider);
 
-	/* momentary glitch burst */
+	/* The three actions share one row: power (drives picture and sound), a
+	 * momentary glitch burst, and the degauss coil. */
+	QPushButton *power = new QPushButton(T("NTSCSnow.Dock.PowerOff"));
 	QPushButton *glitch = new QPushButton(T("NTSCSnow.Dock.Glitch"));
-	layout->addWidget(glitch);
-
-	/* degauss coil (picture ripple + boing) */
 	QPushButton *degauss = new QPushButton(T("NTSCSnow.Dock.Degauss"));
-	layout->addWidget(degauss);
+	QHBoxLayout *btn_row = new QHBoxLayout();
+	btn_row->addWidget(power, 1);
+	btn_row->addWidget(glitch, 1);
+	btn_row->addWidget(degauss, 1);
+	layout->addLayout(btn_row);
 	layout->addStretch(1);
 
 	g_vid_combo = vid_combo;
