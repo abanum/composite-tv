@@ -8,6 +8,7 @@
     Usage (from the repo root or anywhere):
       powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
       # optional: -Configuration Release   (default: RelWithDebInfo)
+      # optional: -NoOpen                  (skip opening the release folder)
 
     NOTE: keep this file ASCII-only. Windows PowerShell 5.1 reads a BOM-less
     script as the system ANSI code page, so non-ASCII text corrupts parsing.
@@ -15,7 +16,8 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'RelWithDebInfo',
-    [string]$ISCC = ''
+    [string]$ISCC = '',
+    [switch]$NoOpen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -100,6 +102,11 @@ $out = Join-Path $Root "release\ntsc-snow-$version-windows-x64.exe"
 if (Test-Path $out) {
     Write-Host ""
     Write-Host "DONE: $out" -ForegroundColor Cyan
+    if (-not $NoOpen) {
+        # Show the finished installer in Explorer, already selected. Start-Process
+        # keeps explorer's odd exit code out of $LASTEXITCODE.
+        Start-Process explorer.exe -ArgumentList "/select,`"$out`""
+    }
 } else {
     Write-Warning "ISCC reported success but the expected output was not found: $out"
 }
