@@ -31,11 +31,12 @@ bool obs_module_load(void)
 	obs_register_source(&ntsc_snow_filter_info);
 	obs_register_source(&ntsc_snow_audio_filter_info);
 	ntsc_dock_register();
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r14-degauss] (version %s)", PLUGIN_VERSION);
+	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r15-dockmem] (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
 void obs_module_unload(void)
 {
+	ntsc_dock_unregister();
 	obs_log(LOG_INFO, "plugin unloaded");
 }

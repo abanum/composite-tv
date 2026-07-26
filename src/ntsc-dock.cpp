@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 #include <obs-frontend-api.h>
+#include <util/config-file.h>
 
 #include <QComboBox>
 #include <QHBoxLayout>
@@ -40,10 +41,33 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 static const char *FILTER_ID = "ntsc_snow_filter";
 static const char *AUDIO_FILTER_ID = "ntsc_snow_audio";
 
+/* Where the chosen targets are remembered between runs. */
+static const char *CFG_SECTION = "NTSCSnow";
+static const char *CFG_VIDEO = "VideoSource";
+static const char *CFG_AUDIO = "AudioSource";
+
 /* Localised UI string as a QString. */
 static QString T(const char *key)
 {
 	return QString::fromUtf8(obs_module_text(key));
+}
+
+static QString load_choice(const char *key)
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return QString();
+	const char *v = config_get_string(cfg, CFG_SECTION, key);
+	return v ? QString::fromUtf8(v) : QString();
+}
+
+static void save_choice(const char *key, const QString &name)
+{
+	config_t *cfg = obs_frontend_get_user_config();
+	if (!cfg)
+		return;
+	config_set_string(cfg, CFG_SECTION, key, name.toUtf8().constData());
+	config_save(cfg);
 }
 
 /* Return the first filter with the given id on a source (borrowed reference,
@@ -89,7 +113,7 @@ static void add_if_filtered(struct add_ctx *a, obs_source_t *src)
  * Inputs come from obs_enum_all_sources; scenes are added via obs_enum_scenes
  * so a filter applied to a whole scene (the full composited picture) is listed
  * regardless of how scenes are stored internally. */
-static void populate(QComboBox *combo, const char *id)
+static void populate(QComboBox *combo, const char *id, const QString &remembered)
 {
 	QString current = combo->currentText();
 	combo->blockSignals(true);
@@ -103,7 +127,12 @@ static void populate(QComboBox *combo, const char *id)
 	obs_enum_all_sources(collect, &ctx);
 	obs_enum_scenes(collect, &ctx);
 
+	/* Keep what the user was on; failing that, fall back to the target
+	 * remembered from a previous run. At start-up the combo is empty and no
+	 * sources exist yet, so the remembered name is the only thing to go on. */
 	int idx = combo->findText(current);
+	if (idx < 0)
+		idx = combo->findText(remembered);
 	if (idx >= 0)
 		combo->setCurrentIndex(idx);
 	combo->blockSignals(false);
@@ -165,6 +194,47 @@ static void bump_filter_int(const QString &name, const char *id, const char *key
 	edit_settings(name, id, [&](obs_data_t *s) { obs_data_set_int(s, key, obs_data_get_int(s, key) + 1); });
 }
 
+/* There is only ever one dock, and the frontend event callback below is a plain
+ * C function that has to reach its widgets, so they live here. */
+static QComboBox *g_vid_combo = nullptr;
+static QComboBox *g_aud_combo = nullptr;
+static QSlider *g_slider = nullptr;
+static QPushButton *g_power = nullptr;
+
+/* Reflect the video target's stored values in the widgets. */
+static void sync_widgets()
+{
+	if (!g_vid_combo)
+		return;
+	read_settings(g_vid_combo->currentText(), FILTER_ID, [&](obs_data_t *s) {
+		g_slider->blockSignals(true);
+		g_slider->setValue((int)(obs_data_get_double(s, "field_strength") * 100.0 + 0.5));
+		g_slider->blockSignals(false);
+		g_power->setText(T(obs_data_get_bool(s, "power") ? "NTSCSnow.Dock.PowerOff"
+								: "NTSCSnow.Dock.PowerOn"));
+	});
+}
+
+/* Rebuild both target lists, restoring the sources remembered last run. */
+static void refill_targets()
+{
+	if (!g_vid_combo)
+		return;
+	populate(g_vid_combo, FILTER_ID, load_choice(CFG_VIDEO));
+	populate(g_aud_combo, AUDIO_FILTER_ID, load_choice(CFG_AUDIO));
+	sync_widgets();
+}
+
+/* Sources do not exist yet while modules load, so the lists can only be filled
+ * once OBS has finished loading the scene collection - and again whenever the
+ * collection is swapped out. */
+static void frontend_event(enum obs_frontend_event event, void *)
+{
+	if (event == OBS_FRONTEND_EVENT_FINISHED_LOADING ||
+	    event == OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGED)
+		refill_targets();
+}
+
 void ntsc_dock_register(void)
 {
 	QWidget *root = new QWidget();
@@ -206,25 +276,20 @@ void ntsc_dock_register(void)
 	layout->addWidget(degauss);
 	layout->addStretch(1);
 
-	/* reflect the video target's current values in the widgets */
-	auto sync = [vid_combo, slider, power]() {
-		read_settings(vid_combo->currentText(), FILTER_ID, [&](obs_data_t *s) {
-			slider->blockSignals(true);
-			slider->setValue((int)(obs_data_get_double(s, "field_strength") * 100.0 + 0.5));
-			slider->blockSignals(false);
-			power->setText(T(obs_data_get_bool(s, "power") ? "NTSCSnow.Dock.PowerOff"
-								      : "NTSCSnow.Dock.PowerOn"));
-		});
-	};
+	g_vid_combo = vid_combo;
+	g_aud_combo = aud_combo;
+	g_slider = slider;
+	g_power = power;
 
-	auto refill = [vid_combo, aud_combo, sync]() {
-		populate(vid_combo, FILTER_ID);
-		populate(aud_combo, AUDIO_FILTER_ID);
-		sync();
-	};
+	QObject::connect(refresh, &QPushButton::clicked, refill_targets);
 
-	QObject::connect(refresh, &QPushButton::clicked, refill);
-	QObject::connect(vid_combo, &QComboBox::currentTextChanged, [sync](const QString &) { sync(); });
+	/* Remember the picks so the dock comes back usable after a restart. */
+	QObject::connect(vid_combo, &QComboBox::currentTextChanged, [](const QString &name) {
+		save_choice(CFG_VIDEO, name);
+		sync_widgets();
+	});
+	QObject::connect(aud_combo, &QComboBox::currentTextChanged,
+			 [](const QString &name) { save_choice(CFG_AUDIO, name); });
 
 	QObject::connect(slider, &QSlider::valueChanged, [vid_combo, aud_combo](int val) {
 		double fs = val / 100.0;
@@ -232,11 +297,11 @@ void ntsc_dock_register(void)
 		set_filter_double(aud_combo->currentText(), AUDIO_FILTER_ID, "field_strength", fs);
 	});
 
-	QObject::connect(power, &QPushButton::clicked, [vid_combo, aud_combo, sync]() {
+	QObject::connect(power, &QPushButton::clicked, [vid_combo, aud_combo]() {
 		bool next = !get_filter_bool(vid_combo->currentText(), FILTER_ID, "power", true);
 		set_filter_bool(vid_combo->currentText(), FILTER_ID, "power", next);
 		set_filter_bool(aud_combo->currentText(), AUDIO_FILTER_ID, "power", next);
-		sync(); /* re-reads what we just wrote, so the label cannot drift */
+		sync_widgets(); /* re-reads what we just wrote, so the label cannot drift */
 	});
 
 	QObject::connect(glitch, &QPushButton::clicked,
@@ -248,7 +313,17 @@ void ntsc_dock_register(void)
 		bump_filter_int(aud_combo->currentText(), AUDIO_FILTER_ID, "degauss_pulse");
 	});
 
-	refill();
+	refill_targets();
+	obs_frontend_add_event_callback(frontend_event, nullptr);
 
 	obs_frontend_add_dock_by_id("ntsc_snow_dock", obs_module_text("NTSCSnow.Dock"), root);
+}
+
+void ntsc_dock_unregister(void)
+{
+	obs_frontend_remove_event_callback(frontend_event, nullptr);
+	g_vid_combo = nullptr;
+	g_aud_combo = nullptr;
+	g_slider = nullptr;
+	g_power = nullptr;
 }

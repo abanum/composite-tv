@@ -25,6 +25,9 @@ extern "C" {
 /* Registers the "NTSC Snow" control dock with the OBS frontend. */
 void ntsc_dock_register(void);
 
+/* Drops the frontend event callback the dock installed. */
+void ntsc_dock_unregister(void);
+
 #ifdef __cplusplus
 }
 #endif
