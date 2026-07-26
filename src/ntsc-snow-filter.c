@@ -122,6 +122,11 @@ struct ntsc_snow {
 	/* degauss */
 	float degauss_len;
 	float degauss_strength;
+
+	/* inspection zoom */
+	float preview_zoom;
+	float zoom_x;
+	float zoom_y;
 	float degauss;        /* 1 -> 0 envelope */
 	double degauss_phase;
 	long long degauss_pulse;
@@ -293,6 +298,9 @@ static void ntsc_update(void *data, obs_data_t *s)
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
 	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
+	f->preview_zoom = (float)obs_data_get_double(s, "preview_zoom");
+	f->zoom_x = (float)obs_data_get_double(s, "zoom_x");
+	f->zoom_y = (float)obs_data_get_double(s, "zoom_y");
 
 	/* The dock fires a burst by incrementing this counter. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
@@ -493,7 +501,14 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "curvature", f->curvature);
 	set_f(e, "vignette", f->vignette);
 	set_f(e, "overscan", f->overscan);
-	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES);
+	/* Zooming in means each scan line covers proportionally more output
+	 * pixels, so the scan-line visibility ramp has to know about it -
+	 * otherwise magnifying would not reveal the lines it exists to show. */
+	const float zoom = f->preview_zoom > 1.0f ? f->preview_zoom : 1.0f;
+	set_f(e, "pixels_per_line", (float)cy / (float)ACTIVE_LINES * zoom);
+	set_f(e, "preview_zoom", zoom);
+	set_f(e, "zoom_x", f->zoom_x);
+	set_f(e, "zoom_y", f->zoom_y);
 
 	/* Glitches. The steady-state values were already gated by glitch_enable in
 	 * ntsc_update(); the momentary burst adds on top, so the dock button and
@@ -701,6 +716,12 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("NTSCSnow.DegaussStrength"), 0.0, 1.0,
 					0.01);
 
+	/* Inspection aid: magnifies the output, so it must be wound back to 1.0
+	 * before going live - the label says so. */
+	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("NTSCSnow.PreviewZoom"), 1.0, 8.0, 0.1);
+	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
+
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
 	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("NTSCSnow.GhostGain"), 0.0, 0.8, 0.01);
@@ -749,6 +770,9 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "overscan", 0.02);
 	obs_data_set_default_double(s, "degauss_len", 1.2);
 	obs_data_set_default_double(s, "degauss_strength", 0.7);
+	obs_data_set_default_double(s, "preview_zoom", 1.0);
+	obs_data_set_default_double(s, "zoom_x", 0.5);
+	obs_data_set_default_double(s, "zoom_y", 0.5);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
 	obs_data_set_default_double(s, "ghost_gain", 0.0);

@@ -63,7 +63,13 @@ uniform float scanline;
 uniform float curvature;
 uniform float vignette;
 uniform float overscan;
-uniform float pixels_per_line;    // output pixels per active ln
+uniform float pixels_per_line;    // output pixels per active ln (zoom included)
+
+// Inspection zoom: magnify part of the tube so sub-pixel detail such as the
+// beam spot and the scan lines can be judged. 1.0 = off.
+uniform float preview_zoom;
+uniform float zoom_x;             // magnification centre, 0..1
+uniform float zoom_y;
 
 // Glitches
 uniform float ghost_gain;         // multipath ghost amplitude
@@ -471,15 +477,25 @@ float3 sampleLine(int lineIndex, float x)
 
 float4 PSDisplay(VertData v) : TARGET
 {
+	// Inspection zoom: look at a smaller piece of the output, blown up. Applied
+	// before everything else so it magnifies the finished tube, magnifying
+	// glass style. The persistence tap below deliberately stays in unzoomed
+	// screen space - the buffer already holds a zoomed frame.
+	float2 zuv = v.uv;
+	if (preview_zoom > 1.0) {
+		float2 c = float2(zoom_x, zoom_y);
+		zuv = (v.uv - c) / preview_zoom + c;
+	}
+
 	// Fit the CRT screen (aspect = screen_aspect) inside the output canvas,
 	// adding black bars when the two aspect ratios differ. suv is the screen
 	// coordinate; anything outside [0,1] falls in the black border.
 	float out_aspect = output_size.x / output_size.y;
-	float2 suv = v.uv;
+	float2 suv = zuv;
 	if (screen_aspect < out_aspect)
-		suv.x = (v.uv.x - 0.5) * (out_aspect / screen_aspect) + 0.5;
+		suv.x = (zuv.x - 0.5) * (out_aspect / screen_aspect) + 0.5;
 	else
-		suv.y = (v.uv.y - 0.5) * (screen_aspect / out_aspect) + 0.5;
+		suv.y = (zuv.y - 0.5) * (screen_aspect / out_aspect) + 0.5;
 
 	// Degauss: the decaying AC field deflects the beam, so the whole raster
 	// ripples and breathes for about a second.
