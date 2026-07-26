@@ -506,9 +506,12 @@ float4 PSDisplay(VertData v) : TARGET
 
 	// Vertical roll (V-hold failure): scroll the picture and wrap it around,
 	// so the field seam - the blanking bar - marches through the screen.
-	float lineF = uv.y * active_lines - 0.5 + v_roll;
-	lineF = fmod(lineF + active_lines * 8.0, active_lines);
-	float inBar = (v_bar > 0.0 && lineF < v_bar) ? 1.0 : 0.0;
+	// Wrap in frame coordinates and only then apply the half-line sample
+	// offset: subtracting it first pushes the topmost half line past the wrap,
+	// which left a sliver of the bottom line showing above the blanking bar.
+	float linePos = fmod(uv.y * active_lines + v_roll + active_lines * 8.0, active_lines);
+	float inBar = (v_bar > 0.0 && linePos < v_bar) ? 1.0 : 0.0;
+	float lineF = linePos - 0.5;
 
 	int base = (int)floor(lineF);
 	int maxLine = (int)active_lines;
