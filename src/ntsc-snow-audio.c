@@ -169,8 +169,10 @@ static void *na_create(obs_data_t *settings, obs_source_t *source)
 	for (int c = 0; c < NA_MAX_CH; c++)
 		f->prng[c] = 0x9e3779b9u ^ (uint32_t)(c * 2654435761u + 12345u);
 	na_update(f, settings);
-	/* start already settled so there is no fade on load */
+	/* Start already settled: no fade, and no replay of a degauss that was
+	 * fired in an earlier session and only survives as a saved counter. */
 	f->master = f->powered ? 1.0f : 0.0f;
+	f->degauss = 0.0f;
 	return f;
 }
 

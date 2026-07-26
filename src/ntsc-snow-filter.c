@@ -352,9 +352,13 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	bfree(path);
 
 	ntsc_update(f, settings);
-	/* start already settled in the target state (no animation on load) */
+	/* Start already settled in the target state, with nothing animating: the
+	 * saved pulse counters are momentary events that were fired in an earlier
+	 * session, so adopting their values must not replay them now. */
 	f->power_state = f->powered ? POWER_ON : POWER_OFF;
 	f->power_elapsed = 0.0f;
+	f->burst = 0.0f;
+	f->degauss = 0.0f;
 	return f;
 }
 
