@@ -456,6 +456,14 @@ float3 sampleLine(int lineIndex, float x)
 	float dx = spot_h * 0.5 / field_size.x;
 	x += lineShift(lineIndex);
 
+	// A displaced line runs off the end of its active video, and what lies
+	// beyond that is the horizontal blanking interval - black. Without this the
+	// clamped sampler would smear the edge column instead, which is what made
+	// flagging look like a stretched copy of the picture rather than a bend
+	// into blanking.
+	if (x < 0.0 || x > 1.0)
+		return float3(0.0, 0.0, 0.0);
+
 	float3 outCol;
 	if (useCur) {
 		float3 ca = image.Sample(linearClamp, float2(x - dx, row)).rgb;
