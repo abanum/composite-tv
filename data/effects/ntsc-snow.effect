@@ -81,7 +81,7 @@ uniform float beat_gain;          // interfering carrier amplitude
 uniform float beat_norm;          // interfering carrier frequency / fs
 uniform float beat_phase;         // interfering carrier phase [rad]
 uniform float v_roll;             // vertical roll offset [lines]
-uniform float v_bar;              // blanking bar height [lines]
+uniform float vblank_lines;       // vertical blanking depth [lines]
 uniform float h_jitter;           // per-line horizontal jitter
 uniform float flagging;           // top-of-picture horizontal bend
 uniform float head_switch;        // VHS head-switching tear at the bottom
@@ -535,13 +535,13 @@ float4 PSDisplay(VertData v) : TARGET
 
 	// Vertical roll (V-hold failure). One frame period is the active picture
 	// plus the vertical blanking interval, so the cycle the beam repeats is
-	// active_lines + v_bar. The blanking sits between successive pictures
+	// active_lines + vblank_lines. Blanking sits between successive pictures
 	// rather than on top of one - with the hold locked it stays off screen
 	// entirely, and only a roll drags it through the visible raster.
 	// Wrap first and apply the half-line sample offset after: subtracting it
 	// first pushes the topmost half line past the wrap, which used to leave a
 	// sliver of the bottom line showing above the bar.
-	float cycle = active_lines + v_bar;
+	float cycle = active_lines + vblank_lines;
 	float linePos = fmod(uv.y * active_lines + v_roll + cycle * 8.0, cycle);
 	float inBar = (linePos >= active_lines) ? 1.0 : 0.0;
 	float lineF = linePos - 0.5;

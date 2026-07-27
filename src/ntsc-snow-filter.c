@@ -34,6 +34,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define FIELD_W 754    /* active samples per line   */
 #define FIELD_H 243    /* active lines per field    */
 #define ACTIVE_LINES 486
+#define TOTAL_LINES 525
+/* Vertical blanking is whatever the frame is not active picture: 39 lines. */
+#define VBLANK_LINES (TOTAL_LINES - ACTIVE_LINES)
 #define SAMPLE_RATE_HZ 14318180.0 /* 4 * 3.579545 MHz */
 #define BURST_PHASE_RAD (57.0 * NS_PI / 180.0)
 #define CHROMA_DEMOD_LPF_HZ 600000.0
@@ -106,7 +109,6 @@ struct ntsc_snow {
 	float ghost_gain;
 	float ghost_delay;
 	float v_roll_speed;
-	float v_bar;
 	float h_jitter;
 	float flagging;
 	float head_switch;
@@ -125,15 +127,15 @@ struct ntsc_snow {
 	/* degauss */
 	float degauss_len;
 	float degauss_strength;
+	float degauss;        /* 1 -> 0 envelope */
+	double degauss_phase;
+	long long degauss_pulse;
+	obs_hotkey_id degauss_hotkey;
 
 	/* inspection zoom */
 	float preview_zoom;
 	float zoom_x;
 	float zoom_y;
-	float degauss;        /* 1 -> 0 envelope */
-	double degauss_phase;
-	long long degauss_pulse;
-	obs_hotkey_id degauss_hotkey;
 };
 
 /* ---- small effect-parameter setters ---------------------------------- */
@@ -166,12 +168,13 @@ static inline float clampf(float v, float lo, float hi)
 	return v < lo ? lo : (v > hi ? hi : v);
 }
 
-/* Depth of the vertical blanking bar in drawn lines. The setting is given in
- * NTSC lines of the 486-line active frame, so it scales with the line count;
- * the momentary burst widens it further. */
+/* Depth of the vertical blanking interval in drawn lines. Fixed by the NTSC
+ * standard - it is a property of the signal, not something a receiver fault
+ * changes - so it only has to be rescaled when the frame is drawn with a
+ * different line count. */
 static inline float bar_lines(const struct ntsc_snow *f)
 {
-	return (f->v_bar + f->burst * 12.0f) * ((float)f->scan_lines / (float)ACTIVE_LINES);
+	return (float)f->scan_lines * ((float)VBLANK_LINES / (float)ACTIVE_LINES);
 }
 
 static inline void set_tex(gs_effect_t *e, const char *n, gs_texture_t *t)
@@ -304,7 +307,6 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->ghost_gain = glitch ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
 	f->ghost_delay = glitch ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
 	f->v_roll_speed = glitch ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
-	f->v_bar = glitch ? (float)obs_data_get_double(s, "v_bar") : 0.0f;
 	f->h_jitter = glitch ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
 	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
 	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
@@ -543,7 +545,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
-	set_f(e, "v_bar", bar_lines(f));
+	set_f(e, "vblank_lines", bar_lines(f));
 	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
@@ -790,7 +792,6 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("NTSCSnow.GhostGain"), 0.0, 0.8, 0.01);
 	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("NTSCSnow.GhostDelay"), -60.0, 120.0, 1.0);
 	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("NTSCSnow.VRollSpeed"), -2.0, 2.0, 0.01);
-	obs_properties_add_float_slider(g, "v_bar", obs_module_text("NTSCSnow.VBar"), 0.0, 45.0, 1.0);
 	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("NTSCSnow.HJitter"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(g, "flagging", obs_module_text("NTSCSnow.Flagging"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(g, "head_switch", obs_module_text("NTSCSnow.HeadSwitch"), 0.0, 1.0, 0.01);
@@ -844,8 +845,6 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "ghost_gain", 0.0);
 	obs_data_set_default_double(s, "ghost_delay", 24.0);
 	obs_data_set_default_double(s, "v_roll_speed", 0.0);
-	/* 525 total lines - 486 active = 39 lines of vertical blanking. */
-	obs_data_set_default_double(s, "v_bar", 39.0);
 	obs_data_set_default_double(s, "h_jitter", 0.0);
 	obs_data_set_default_double(s, "flagging", 0.0);
 	obs_data_set_default_double(s, "head_switch", 0.0);

@@ -31,7 +31,7 @@ bool obs_module_load(void)
 	obs_register_source(&ntsc_snow_filter_info);
 	obs_register_source(&ntsc_snow_audio_filter_info);
 	ntsc_dock_register();
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r25-vbicycle] (version %s)", PLUGIN_VERSION);
+	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r26-vbifixed] (version %s)", PLUGIN_VERSION);
 	return true;
 }
 
