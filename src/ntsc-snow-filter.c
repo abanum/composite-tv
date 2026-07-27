@@ -773,19 +773,21 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "spot_v", obs_module_text("NTSCSnow.SpotV"), 0.30, 1.60, 0.01);
 	obs_properties_add_float_slider(p, "spot_h", obs_module_text("NTSCSnow.SpotH"), 0.30, 2.50, 0.01);
 	obs_properties_add_float_slider(p, "scanline", obs_module_text("NTSCSnow.Scanline"), 0.0, 0.60, 0.01);
+
+	/* Inspection aid, kept next to the controls it exists to make judgeable.
+	 * It magnifies the output, so it winds back to 1.0 when the dialog is
+	 * closed - the hint below says so. */
+	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("NTSCSnow.PreviewZoom"), 1.0, 8.0, 0.1);
+	obs_properties_add_text(p, "zoom_hint", obs_module_text("NTSCSnow.ZoomHint"), OBS_TEXT_INFO);
+	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
+
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
 	obs_properties_add_float_slider(p, "overscan", obs_module_text("NTSCSnow.Overscan"), 0.0, 0.08, 0.005);
 	obs_properties_add_float_slider(p, "degauss_len", obs_module_text("NTSCSnow.DegaussLen"), 0.3, 3.0, 0.1);
 	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("NTSCSnow.DegaussStrength"), 0.0, 1.0,
 					0.01);
-
-	/* Inspection aid: magnifies the output, so it must be wound back to 1.0
-	 * before going live - the label says so. */
-	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("NTSCSnow.PreviewZoom"), 1.0, 8.0, 0.1);
-	obs_properties_add_text(p, "zoom_hint", obs_module_text("NTSCSnow.ZoomHint"), OBS_TEXT_INFO);
-	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
 
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
