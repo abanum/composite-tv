@@ -533,13 +533,17 @@ float4 PSDisplay(VertData v) : TARGET
 	uv.x = (uv.x - 0.5) / cH + 0.5;
 	float bandMask = step(0.0, uv.y) * step(uv.y, 1.0) * step(0.0, uv.x) * step(uv.x, 1.0);
 
-	// Vertical roll (V-hold failure): scroll the picture and wrap it around,
-	// so the field seam - the blanking bar - marches through the screen.
-	// Wrap in frame coordinates and only then apply the half-line sample
-	// offset: subtracting it first pushes the topmost half line past the wrap,
-	// which left a sliver of the bottom line showing above the blanking bar.
-	float linePos = fmod(uv.y * active_lines + v_roll + active_lines * 8.0, active_lines);
-	float inBar = (v_bar > 0.0 && linePos < v_bar) ? 1.0 : 0.0;
+	// Vertical roll (V-hold failure). One frame period is the active picture
+	// plus the vertical blanking interval, so the cycle the beam repeats is
+	// active_lines + v_bar. The blanking sits between successive pictures
+	// rather than on top of one - with the hold locked it stays off screen
+	// entirely, and only a roll drags it through the visible raster.
+	// Wrap first and apply the half-line sample offset after: subtracting it
+	// first pushes the topmost half line past the wrap, which used to leave a
+	// sliver of the bottom line showing above the bar.
+	float cycle = active_lines + v_bar;
+	float linePos = fmod(uv.y * active_lines + v_roll + cycle * 8.0, cycle);
+	float inBar = (linePos >= active_lines) ? 1.0 : 0.0;
 	float lineF = linePos - 0.5;
 
 	int base = (int)floor(lineF);

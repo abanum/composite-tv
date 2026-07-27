@@ -166,6 +166,14 @@ static inline float clampf(float v, float lo, float hi)
 	return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/* Depth of the vertical blanking bar in drawn lines. The setting is given in
+ * NTSC lines of the 486-line active frame, so it scales with the line count;
+ * the momentary burst widens it further. */
+static inline float bar_lines(const struct ntsc_snow *f)
+{
+	return (f->v_bar + f->burst * 12.0f) * ((float)f->scan_lines / (float)ACTIVE_LINES);
+}
+
 static inline void set_tex(gs_effect_t *e, const char *n, gs_texture_t *t)
 {
 	gs_eparam_t *p = gs_effect_get_param_by_name(e, n);
@@ -535,10 +543,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
-	/* The bar is specified in NTSC lines (of the 486-line active frame), so
-	 * scale it when the frame is drawn with fewer lines - otherwise 240p would
-	 * show a blanking bar twice as deep as it should be. */
-	set_f(e, "v_bar", (f->v_bar + b * 12.0f) * (lines / (float)ACTIVE_LINES));
+	set_f(e, "v_bar", bar_lines(f));
 	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
@@ -596,21 +601,23 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	}
 	/* The burst kicks the vertical hold hard so the picture visibly tumbles
 	 * (several screens over the burst) before it re-locks. */
-	/* The roll is measured in scan lines, so one screen is however many lines
-	 * the frame is currently drawn with. */
+	/* One roll cycle is the active picture plus the blanking interval, which
+	 * is what the shader wraps over - the two have to agree or the wrap would
+	 * jump the picture. */
 	const double frame_lines = (double)f->scan_lines;
+	const double cycle = frame_lines + (double)bar_lines(f);
 	float roll_speed = f->v_roll_speed + f->burst * 6.0f;
 	if (roll_speed != 0.0f) {
-		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * frame_lines * dt, frame_lines);
+		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * cycle * dt, cycle);
 	} else if (f->v_roll_pos != 0.0) {
 		/* Vertical hold re-locks: slide back to the framed position by the
 		 * shortest way round, then snap once we are within half a line. */
-		const double half = frame_lines * 0.5;
-		double p = fmod(f->v_roll_pos, frame_lines);
+		const double half = cycle * 0.5;
+		double p = fmod(f->v_roll_pos, cycle);
 		if (p > half)
-			p -= frame_lines;
+			p -= cycle;
 		else if (p < -half)
-			p += frame_lines;
+			p += cycle;
 		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
 		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
