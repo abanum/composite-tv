@@ -535,7 +535,10 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
-	set_f(e, "v_bar", f->v_bar + b * 12.0f);
+	/* The bar is specified in NTSC lines (of the 486-line active frame), so
+	 * scale it when the frame is drawn with fewer lines - otherwise 240p would
+	 * show a blanking bar twice as deep as it should be. */
+	set_f(e, "v_bar", (f->v_bar + b * 12.0f) * (lines / (float)ACTIVE_LINES));
 	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
@@ -780,7 +783,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("NTSCSnow.GhostGain"), 0.0, 0.8, 0.01);
 	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("NTSCSnow.GhostDelay"), -60.0, 120.0, 1.0);
 	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("NTSCSnow.VRollSpeed"), -2.0, 2.0, 0.01);
-	obs_properties_add_float_slider(g, "v_bar", obs_module_text("NTSCSnow.VBar"), 0.0, 30.0, 1.0);
+	obs_properties_add_float_slider(g, "v_bar", obs_module_text("NTSCSnow.VBar"), 0.0, 45.0, 1.0);
 	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("NTSCSnow.HJitter"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(g, "flagging", obs_module_text("NTSCSnow.Flagging"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(g, "head_switch", obs_module_text("NTSCSnow.HeadSwitch"), 0.0, 1.0, 0.01);
@@ -834,7 +837,8 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "ghost_gain", 0.0);
 	obs_data_set_default_double(s, "ghost_delay", 24.0);
 	obs_data_set_default_double(s, "v_roll_speed", 0.0);
-	obs_data_set_default_double(s, "v_bar", 12.0);
+	/* 525 total lines - 486 active = 39 lines of vertical blanking. */
+	obs_data_set_default_double(s, "v_bar", 39.0);
 	obs_data_set_default_double(s, "h_jitter", 0.0);
 	obs_data_set_default_double(s, "flagging", 0.0);
 	obs_data_set_default_double(s, "head_switch", 0.0);
