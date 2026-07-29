@@ -136,6 +136,11 @@ struct ntsc_snow {
 	float preview_zoom;
 	float zoom_x;
 	float zoom_y;
+
+	/* shadow mask / aperture grille */
+	int mask_type;      /* 0 off, 1 slot, 2 dot, 3 grille */
+	float mask_strength;
+	float mask_pitch;   /* RGB triads across the tube width */
 };
 
 /* ---- small effect-parameter setters ---------------------------------- */
@@ -320,6 +325,11 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->preview_zoom = (float)obs_data_get_double(s, "preview_zoom");
 	f->zoom_x = (float)obs_data_get_double(s, "zoom_x");
 	f->zoom_y = (float)obs_data_get_double(s, "zoom_y");
+	f->mask_type = (int)obs_data_get_int(s, "mask_type");
+	f->mask_strength = (float)obs_data_get_double(s, "mask_strength");
+	f->mask_pitch = (float)obs_data_get_double(s, "mask_pitch");
+	if (f->mask_pitch < 1.0f)
+		f->mask_pitch = 450.0f;
 
 	/* The dock fires a burst by incrementing this counter. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
@@ -534,6 +544,16 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "preview_zoom", zoom);
 	set_f(e, "zoom_x", f->zoom_x);
 	set_f(e, "zoom_y", f->zoom_y);
+
+	/* Shadow mask. The triad density is defined across the tube, which is
+	 * narrower than the canvas when it is pillarboxed, so measure the tube
+	 * width in output pixels for the visibility ramp. */
+	const float out_aspect = (float)cx / (float)cy;
+	const float tube_px = (scr_aspect < out_aspect) ? (float)cy * scr_aspect : (float)cx;
+	set_f(e, "mask_type", (float)f->mask_type);
+	set_f(e, "mask_strength", f->mask_strength);
+	set_f(e, "mask_triads", f->mask_pitch);
+	set_f(e, "pixels_per_triad", tube_px * zoom / f->mask_pitch);
 
 	/* Glitches. The steady-state values were already gated by glitch_enable in
 	 * ntsc_update(); the momentary burst adds on top, so the dock button and
@@ -782,6 +802,16 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
 
+	/* tube-face colour structure */
+	obs_property_t *mt = obs_properties_add_list(p, "mask_type", obs_module_text("NTSCSnow.MaskType"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Off"), 0);
+	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Slot"), 1);
+	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Dot"), 2);
+	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Grille"), 3);
+	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("NTSCSnow.MaskStrength"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("NTSCSnow.MaskPitch"), 150.0, 900.0, 10.0);
+
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
 	obs_properties_add_float_slider(p, "overscan", obs_module_text("NTSCSnow.Overscan"), 0.0, 0.08, 0.005);
@@ -842,6 +872,9 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "preview_zoom", 1.0);
 	obs_data_set_default_double(s, "zoom_x", 0.5);
 	obs_data_set_default_double(s, "zoom_y", 0.5);
+	obs_data_set_default_int(s, "mask_type", 0);
+	obs_data_set_default_double(s, "mask_strength", 0.6);
+	obs_data_set_default_double(s, "mask_pitch", 450.0);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
 	obs_data_set_default_double(s, "ghost_gain", 0.0);
