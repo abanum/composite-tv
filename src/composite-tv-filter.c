@@ -394,7 +394,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	 * itself goes down to 0.01 for a hairline wire. */
 	f->wire_width = (float)obs_data_get_double(s, "wire_width");
 	if (f->wire_width < 0.005f)
-		f->wire_width = 1.4f;
+		f->wire_width = 0.01f;
 
 	/* The dock fires a burst by incrementing this counter. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
@@ -958,7 +958,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "scanline", 0.35);
 	obs_data_set_default_double(s, "curvature", 0.025);
 	obs_data_set_default_double(s, "vignette", 0.30);
-	obs_data_set_default_double(s, "overscan", 0.02);
+	obs_data_set_default_double(s, "overscan", 0.0);
 	obs_data_set_default_double(s, "degauss_len", 1.2);
 	obs_data_set_default_double(s, "degauss_strength", 0.7);
 	obs_data_set_default_double(s, "preview_zoom", 1.0);
@@ -968,7 +968,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "mask_strength", 0.6);
 	obs_data_set_default_double(s, "mask_width", 0.62);
 	obs_data_set_default_double(s, "mask_pitch", 450.0);
-	obs_data_set_default_double(s, "wire_width", 1.4);
+	obs_data_set_default_double(s, "wire_width", 0.01);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
 	obs_data_set_default_double(s, "ghost_gain", 0.0);
