@@ -335,8 +335,10 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->mask_pitch = (float)obs_data_get_double(s, "mask_pitch");
 	if (f->mask_pitch < 1.0f)
 		f->mask_pitch = 450.0f;
+	/* The guard only catches a missing key (which reads as 0.0); the slider
+	 * itself goes down to 0.01 for a hairline wire. */
 	f->wire_width = (float)obs_data_get_double(s, "wire_width");
-	if (f->wire_width < 0.1f)
+	if (f->wire_width < 0.005f)
 		f->wire_width = 1.4f;
 
 	/* The dock fires a burst by incrementing this counter. */
@@ -822,7 +824,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("NTSCSnow.MaskStrength"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(p, "mask_width", obs_module_text("NTSCSnow.MaskWidth"), 0.20, 1.00, 0.01);
 	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("NTSCSnow.MaskPitch"), 150.0, 900.0, 10.0);
-	obs_properties_add_float_slider(p, "wire_width", obs_module_text("NTSCSnow.WireWidth"), 0.4, 4.0, 0.05);
+	obs_properties_add_float_slider(p, "wire_width", obs_module_text("NTSCSnow.WireWidth"), 0.01, 4.0, 0.01);
 
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
