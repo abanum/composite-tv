@@ -79,6 +79,7 @@ uniform float zoom_y;
 // (Trinitron, which also gets its damper wires).
 uniform float mask_type;
 uniform float mask_strength;      // modulation depth
+uniform float mask_width;         // phosphor stripe half-width (fill factor)
 uniform float mask_triads;        // RGB triads across the tube width
 uniform float pixels_per_triad;   // output pixels per triad (zoom included)
 
@@ -429,12 +430,13 @@ float2 curve(float2 uv, float amount)
 }
 
 // One phosphor stripe on the wrapped 0..3 subpixel axis: a soft window centred
-// on the channel's stripe, black in the guard band between stripes.
+// on the channel's stripe, black in the guard band between stripes. mask_width
+// is the stripe half-width, so it sets the phosphor fill vs the black gap.
 float maskStripe(float sub, float centre)
 {
 	float d = abs(sub - centre);
 	d = min(d, 3.0 - d);
-	return smoothstep(0.62, 0.30, d);
+	return smoothstep(mask_width, mask_width * 0.48, d);
 }
 
 // RGB transmission of the tube-face colour structure at a screen position.
@@ -447,6 +449,11 @@ float3 shadowMask(float2 suv)
 	float sub = frac(mx) * 3.0;
 	float my = suv.y * mask_triads / screen_aspect;
 
+	// Thinner phosphors pass less light, so the normalising gain rises as the
+	// width falls to keep the average brightness level (dots go by area, so
+	// squared). At the default width of 0.62 this is exactly 1.
+	float wgain = 0.62 / max(mask_width, 0.05);
+
 	float3 w;
 	if (mask_type < 1.5) {
 		// Slot mask: vertical RGB stripes broken into slots, adjacent
@@ -455,7 +462,7 @@ float3 shadowMask(float2 suv)
 		float stagger = (fmod(floor(mx), 2.0) >= 1.0) ? 0.5 : 0.0;
 		float sy = frac(my / 1.5 + stagger);
 		w *= smoothstep(0.0, 0.12, sy) * smoothstep(1.0, 0.88, sy);
-		w *= 3.1;
+		w *= 3.1 * wgain;
 	} else if (mask_type < 2.5) {
 		// Delta dot mask: round phosphor dots on a hex lattice, the RGB
 		// assignment rotating so vertical neighbours differ (delta triads).
@@ -467,15 +474,16 @@ float3 shadowMask(float2 suv)
 		if (ch < 0.0)
 			ch += 3.0;
 		float2 cell = float2(frac(u) - 0.5, frac(v) - 0.5);
-		float dotw = smoothstep(0.50, 0.28, length(cell));
+		float r = mask_width * 0.8065;   // dot radius; 0.50 at default width
+		float dotw = smoothstep(r, r * 0.56, length(cell));
 		w = dotw * float3((ch < 0.5) ? 1.0 : 0.0,
 				  (ch >= 0.5 && ch < 1.5) ? 1.0 : 0.0,
 				  (ch >= 1.5) ? 1.0 : 0.0);
-		w *= 3.4;
+		w *= 3.4 * wgain * wgain;
 	} else {
 		// Aperture grille: unbroken vertical stripes (Trinitron).
 		w = float3(maskStripe(sub, 0.5), maskStripe(sub, 1.5), maskStripe(sub, 2.5));
-		w *= 2.6;
+		w *= 2.6 * wgain;
 	}
 	return w;
 }

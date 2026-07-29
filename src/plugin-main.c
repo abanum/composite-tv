@@ -31,7 +31,7 @@ bool obs_module_load(void)
 	obs_register_source(&ntsc_snow_filter_info);
 	obs_register_source(&ntsc_snow_audio_filter_info);
 	ntsc_dock_register();
-	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r28-mask] (version %s)", PLUGIN_VERSION);
+	obs_log(LOG_INFO, "NTSC Snow filter loaded [build r29-maskwidth] (version %s)", PLUGIN_VERSION);
 	return true;
 }
 

@@ -140,6 +140,7 @@ struct ntsc_snow {
 	/* shadow mask / aperture grille */
 	int mask_type;      /* 0 off, 1 slot, 2 dot, 3 grille */
 	float mask_strength;
+	float mask_width;   /* phosphor stripe half-width (fill factor) */
 	float mask_pitch;   /* RGB triads across the tube width */
 };
 
@@ -327,6 +328,9 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->zoom_y = (float)obs_data_get_double(s, "zoom_y");
 	f->mask_type = (int)obs_data_get_int(s, "mask_type");
 	f->mask_strength = (float)obs_data_get_double(s, "mask_strength");
+	f->mask_width = (float)obs_data_get_double(s, "mask_width");
+	if (f->mask_width < 0.05f)
+		f->mask_width = 0.62f;
 	f->mask_pitch = (float)obs_data_get_double(s, "mask_pitch");
 	if (f->mask_pitch < 1.0f)
 		f->mask_pitch = 450.0f;
@@ -552,6 +556,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	const float tube_px = (scr_aspect < out_aspect) ? (float)cy * scr_aspect : (float)cx;
 	set_f(e, "mask_type", (float)f->mask_type);
 	set_f(e, "mask_strength", f->mask_strength);
+	set_f(e, "mask_width", f->mask_width);
 	set_f(e, "mask_triads", f->mask_pitch);
 	set_f(e, "pixels_per_triad", tube_px * zoom / f->mask_pitch);
 
@@ -810,6 +815,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Dot"), 2);
 	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Grille"), 3);
 	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("NTSCSnow.MaskStrength"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "mask_width", obs_module_text("NTSCSnow.MaskWidth"), 0.20, 1.00, 0.01);
 	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("NTSCSnow.MaskPitch"), 150.0, 900.0, 10.0);
 
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
@@ -874,6 +880,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "zoom_y", 0.5);
 	obs_data_set_default_int(s, "mask_type", 0);
 	obs_data_set_default_double(s, "mask_strength", 0.6);
+	obs_data_set_default_double(s, "mask_width", 0.62);
 	obs_data_set_default_double(s, "mask_pitch", 450.0);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
