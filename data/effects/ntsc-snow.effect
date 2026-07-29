@@ -696,13 +696,17 @@ float4 PSDisplay(VertData v) : TARGET
 		// its own control (in triad pitches), and no resolution fade -
 		// they are famously visible on real Trinitrons at any size.
 		if (mask_type > 2.5) {
-			// Floor of one output pixel so the shadow can thin down to a
-			// hairline without aliasing away entirely.
-			float t = max(wire_width * screen_aspect / mask_triads,
-				      1.0 / (output_size.y * preview_zoom));
+			// Floor of one output pixel so the shadow cannot alias away.
+			// A wire thinner than that only covers part of the pixel, so
+			// the shadow lightens in step - down to 50% at hairline
+			// widths - instead of drawing a full-depth line.
+			float phys = wire_width * screen_aspect / mask_triads;
+			float floorw = 1.0 / (output_size.y * preview_zoom);
+			float t = max(phys, floorw);
+			float cover = 0.5 + 0.5 * saturate(phys / floorw);
 			float sh = max(smoothstep(t, t * 0.35, abs(suv.y - 0.3333)),
 				       smoothstep(t, t * 0.35, abs(suv.y - 0.6667)));
-			col *= 1.0 - 0.45 * sh;
+			col *= 1.0 - 0.45 * cover * sh;
 		}
 	}
 
