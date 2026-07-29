@@ -13,7 +13,7 @@
 
 #define AppName "Composite TV (OBS plugin)"
 #define AppPublisher "abanum"
-#define AppURL "https://github.com/abanum/ZAA"
+#define AppURL "https://github.com/abanum/composite-tv"
 
 ; Install tree produced by: cmake --install build_x64 --prefix release\RelWithDebInfo
 #define PayloadDir "..\release\RelWithDebInfo\composite-tv"
