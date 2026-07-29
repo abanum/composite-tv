@@ -91,6 +91,16 @@ struct ntsc_snow {
 	float luma_cutoff;
 	float chroma_gain;
 	float chroma_drift;
+
+	/* FIR weight rotors, (cos, sin) of 2*pi*cutoff - the shader generates
+	 * its windowed-sinc taps by rotation recurrence instead of per-tap
+	 * sin/cos, and these are the per-tap steps. */
+	float rot_y[2];
+	float rot_i[2];
+	float rot_q[2];
+	float rot_c[2];
+	float rot_if[2];
+	float noise_norm_inv; /* 1/sqrt(sum of squared IF taps) */
 	float contrast;
 	float brightness;
 	bool interlace;
@@ -173,6 +183,42 @@ static inline void set_v2(gs_effect_t *e, const char *n, float x, float y)
 static inline float clampf(float v, float lo, float hi)
 {
 	return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static inline float smoothstepf(float e0, float e1, float x)
+{
+	float t = clampf((x - e0) / (e1 - e0), 0.0f, 1.0f);
+	return t * t * (3.0f - 2.0f * t);
+}
+
+/* (cos, sin) of the per-tap angle for a normalised cutoff. */
+static inline void fir_rotor(float rot[2], float fcn)
+{
+	rot[0] = (float)cos(2.0 * NS_PI * (double)fcn);
+	rot[1] = (float)sin(2.0 * NS_PI * (double)fcn);
+}
+
+/* One windowed-sinc tap, mirroring the shader's weight formula. */
+static double fir_tap(int k, double fcn, int radius)
+{
+	double s = 1.0;
+	if (k != 0) {
+		double x = 2.0 * NS_PI * fcn * (double)k;
+		s = sin(x) / x;
+	}
+	return 2.0 * fcn * s * (0.54 + 0.46 * cos(NS_PI * (double)k / (double)(radius + 1)));
+}
+
+/* The detector divides its band-limited noise by the RMS of the tap weights;
+ * that constant only depends on the IF cutoff, so it is computed here. */
+static float detect_norm_inv(float fcn)
+{
+	double sum = 0.0;
+	for (int k = -6; k <= 6; ++k) {
+		double w = fir_tap(k, (double)fcn, 6);
+		sum += w * w;
+	}
+	return (float)(1.0 / sqrt(sum > 1.0e-6 ? sum : 1.0e-6));
 }
 
 /* Depth of the vertical blanking interval in drawn lines. Fixed by the NTSC
@@ -291,6 +337,15 @@ static void ntsc_update(void *data, obs_data_t *s)
 				 ? 0.0f
 				 : (float)obs_data_get_double(s, "chroma_gain");
 	f->chroma_drift = (float)obs_data_get_double(s, "chroma_drift");
+
+	/* Everything the shader's FIR recurrences need from the cutoffs. */
+	fir_rotor(f->rot_y, f->luma_cutoff);
+	fir_rotor(f->rot_i, f->cutoff_i);
+	fir_rotor(f->rot_q, f->cutoff_q);
+	fir_rotor(f->rot_c, (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
+	fir_rotor(f->rot_if, f->if_cutoff);
+	f->noise_norm_inv = detect_norm_inv(f->if_cutoff);
+
 	f->contrast = (float)obs_data_get_double(s, "contrast");
 	f->brightness = (float)obs_data_get_double(s, "brightness");
 	f->interlace = obs_data_get_bool(s, "interlace");
@@ -445,8 +500,11 @@ static void ensure_tr(gs_texrender_t **tr, enum gs_color_format fmt)
 		*tr = gs_texrender_create(fmt, GS_ZS_NONE);
 }
 
-/* Start drawing into a texrender with the pipeline state every pass expects. */
-static bool target_begin(gs_texrender_t *tr, uint32_t w, uint32_t h)
+/* Start drawing into a texrender with the pipeline state every pass expects.
+ * The full-screen passes overwrite every pixel with ONE/ZERO blending, so only
+ * the input capture - where the source need not cover the surface - asks for
+ * a clear. */
+static bool target_begin(gs_texrender_t *tr, uint32_t w, uint32_t h, bool clear)
 {
 	if (!tr)
 		return false;
@@ -454,9 +512,11 @@ static bool target_begin(gs_texrender_t *tr, uint32_t w, uint32_t h)
 	if (!gs_texrender_begin(tr, w, h))
 		return false;
 
-	struct vec4 clear;
-	vec4_zero(&clear);
-	gs_clear(GS_CLEAR_COLOR, &clear, 0.0f, 0);
+	if (clear) {
+		struct vec4 black;
+		vec4_zero(&black);
+		gs_clear(GS_CLEAR_COLOR, &black, 0.0f, 0);
+	}
 	gs_ortho(0.0f, (float)w, 0.0f, (float)h, -100.0f, 100.0f);
 
 	gs_blend_state_push();
@@ -478,7 +538,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 static gs_texture_t *run_pass(struct ntsc_snow *f, gs_effect_t *e, gs_texrender_t *tr, uint32_t w, uint32_t h,
 			      const char *tech, gs_texture_t *img, uint32_t cx, uint32_t cy)
 {
-	if (!target_begin(tr, w, h))
+	if (!target_begin(tr, w, h, false))
 		return NULL;
 
 	apply_params(f, e, cx, cy);
@@ -522,13 +582,24 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
 	set_f(e, "snow_level", f->agc_level);
-	/* Decode */
+	set_f(e, "noise_norm_inv", f->noise_norm_inv);
+	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * f->field_strength);
+	set_f(e, "det_blend", smoothstepf(0.0f, 0.35f, f->field_strength));
+	/* Decode. The free-running oscillator only rotates the hue in the
+	 * no-signal limit - with a picture the receiver locks to the burst. */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
 	set_f(e, "chroma_gain", f->chroma_gain);
-	set_f(e, "chroma_phase", (float)f->chroma_phase_acc);
+	set_f(e, "cyc_phase",
+	      (float)f->chroma_phase_acc * (1.0f - smoothstepf(0.0f, 0.08f, f->field_strength)));
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
+	/* FIR rotors shared by Encode / Detect / Decode */
+	set_v2(e, "fir_rot_y", f->rot_y[0], f->rot_y[1]);
+	set_v2(e, "fir_rot_i", f->rot_i[0], f->rot_i[1]);
+	set_v2(e, "fir_rot_q", f->rot_q[0], f->rot_q[1]);
+	set_v2(e, "fir_rot_c", f->rot_c[0], f->rot_c[1]);
+	set_v2(e, "fir_rot_if", f->rot_if[0], f->rot_if[1]);
 	/* Display */
 	const float lines = (float)f->scan_lines;
 	set_f(e, "active_lines", lines);
@@ -541,24 +612,31 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "frame_parity", (float)(f->field_counter & 1u));
 	set_f(e, "persistence", f->persistence);
 	set_f(e, "spot_v", f->spot_v);
-	set_f(e, "spot_h", f->spot_h);
+	set_f(e, "spot_dx", f->spot_h * 0.5f / (float)FIELD_W);
 	set_f(e, "scanline", f->scanline);
 	set_f(e, "curvature", f->curvature);
 	set_f(e, "vignette", f->vignette);
 	set_f(e, "overscan", f->overscan);
+	set_f(e, "inv_active_lines", 1.0f / lines);
 	/* Zooming in means each scan line covers proportionally more output
 	 * pixels, so the scan-line visibility ramp has to know about it -
 	 * otherwise magnifying would not reveal the lines it exists to show. */
 	const float zoom = f->preview_zoom > 1.0f ? f->preview_zoom : 1.0f;
-	set_f(e, "pixels_per_line", (float)cy / lines * zoom);
+	set_f(e, "line_visible", smoothstepf(2.2f, 3.0f, (float)cy / lines * zoom));
 	set_f(e, "preview_zoom", zoom);
 	set_f(e, "zoom_x", f->zoom_x);
 	set_f(e, "zoom_y", f->zoom_y);
 
+	/* How the tube fits in the canvas: one axis stretches, the other is 1. */
+	const float out_aspect = (float)cx / (float)cy;
+	if (scr_aspect < out_aspect)
+		set_v2(e, "screen_fit", out_aspect / scr_aspect, 1.0f);
+	else
+		set_v2(e, "screen_fit", 1.0f, scr_aspect / out_aspect);
+
 	/* Shadow mask. The triad density is defined across the tube, which is
 	 * narrower than the canvas when it is pillarboxed, so measure the tube
 	 * width in output pixels for the visibility ramp. */
-	const float out_aspect = (float)cx / (float)cy;
 	const float tube_px = (scr_aspect < out_aspect) ? (float)cy * scr_aspect : (float)cx;
 	set_f(e, "mask_type", (float)f->mask_type);
 	set_f(e, "mask_strength", f->mask_strength);
@@ -670,7 +748,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 	/* 1) capture the filter input into a texture */
 	ensure_tr(&f->input, GS_RGBA);
-	if (!target_begin(f->input, cx, cy)) {
+	if (!target_begin(f->input, cx, cy, true)) {
 		obs_source_skip_video_filter(f->source);
 		return;
 	}
