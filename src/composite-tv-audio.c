@@ -1,5 +1,5 @@
 /*
-NTSC Snow — audio filter
+Composite TV — audio filter
 Copyright (C) 2026
 
 Synthesises the no-signal TV audio of the reference NTSC Snow Simulator
@@ -22,7 +22,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "ntsc-snow-audio.h"
+#include "composite-tv-audio.h"
 
 #include <obs-module.h>
 #include <math.h>
@@ -125,7 +125,7 @@ static void na_recalc_coeffs(struct ntsc_audio *f)
 static const char *na_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("NTSCSnow.Audio.Name");
+	return obs_module_text("CompositeTV.Audio.Name");
 }
 
 static void na_update(void *data, obs_data_t *s)
@@ -162,8 +162,8 @@ static void *na_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ntsc_audio *f = bzalloc(sizeof(struct ntsc_audio));
 	f->source = source;
-	f->degauss_hotkey = obs_hotkey_register_source(source, "ntsc_snow_audio.degauss",
-						       obs_module_text("NTSCSnow.Hotkey.Degauss"),
+	f->degauss_hotkey = obs_hotkey_register_source(source, "composite_tv_audio.degauss",
+						       obs_module_text("CompositeTV.Hotkey.Degauss"),
 						       na_degauss_hotkey, f);
 	f->sample_rate = 48000.0;
 	for (int c = 0; c < NA_MAX_CH; c++)
@@ -257,12 +257,12 @@ static obs_properties_t *na_get_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
 	obs_properties_t *p = obs_properties_create();
-	obs_properties_add_text(p, "hint", obs_module_text("NTSCSnow.Hint"), OBS_TEXT_INFO);
-	obs_properties_add_bool(p, "power", obs_module_text("NTSCSnow.Power"));
-	obs_properties_add_float_slider(p, "field_strength", obs_module_text("NTSCSnow.FieldStrength"), 0.0, 1.0,
+	obs_properties_add_text(p, "hint", obs_module_text("CompositeTV.Hint"), OBS_TEXT_INFO);
+	obs_properties_add_bool(p, "power", obs_module_text("CompositeTV.Power"));
+	obs_properties_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0,
 					0.01);
-	obs_properties_add_float_slider(p, "volume", obs_module_text("NTSCSnow.Volume"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "intercarrier", obs_module_text("NTSCSnow.Intercarrier"), 0.0, 0.25, 0.01);
+	obs_properties_add_float_slider(p, "volume", obs_module_text("CompositeTV.Volume"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "intercarrier", obs_module_text("CompositeTV.Intercarrier"), 0.0, 0.25, 0.01);
 	return p;
 }
 
@@ -274,8 +274,8 @@ static void na_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "intercarrier", 0.0);
 }
 
-struct obs_source_info ntsc_snow_audio_filter_info = {
-	.id = "ntsc_snow_audio",
+struct obs_source_info composite_tv_audio_filter_info = {
+	.id = "composite_tv_audio",
 	.type = OBS_SOURCE_TYPE_FILTER,
 	.output_flags = OBS_SOURCE_AUDIO,
 	.get_name = na_get_name,

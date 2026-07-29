@@ -1,5 +1,5 @@
 /*
-NTSC Snow — audio filter
+Composite TV — control dock
 Copyright (C) 2026
 
 This program is free software; you can redistribute it and/or modify
@@ -18,6 +18,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #pragma once
 
-#include <obs-module.h>
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-extern struct obs_source_info ntsc_snow_audio_filter_info;
+/* Registers the "Composite TV" control dock with the OBS frontend. */
+void composite_tv_dock_register(void);
+
+/* Drops the frontend event callback the dock installed. */
+void composite_tv_dock_unregister(void);
+
+#ifdef __cplusplus
+}
+#endif

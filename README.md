@@ -1,4 +1,4 @@
-# OBS NTSC Snow
+# OBS Composite TV
 
 NTSC 方式のテレビ受像機の信号処理系をモデル化して、OBS の任意のソースに
 「ブラウン管越しの映像」と「無信号の砂嵐」を実時間で与えるビデオフィルタです。
@@ -58,12 +58,12 @@ cmake --preset ubuntu-x86_64
 cmake --build --preset ubuntu-x86_64
 ```
 
-ビルド生成物（`ntsc-snow.dll` / `.so` / `.plugin` と `data/` フォルダ）を OBS の
+ビルド生成物（`composite-tv.dll` / `.so` / `.plugin` と `data/` フォルダ）を OBS の
 プラグインディレクトリへ配置します。
 
-- Windows（ポータブル配置）: `obs-studio/obs-plugins/64bit/ntsc-snow.dll` と
-  `obs-studio/data/obs-plugins/ntsc-snow/`
-- Linux: `~/.config/obs-studio/plugins/ntsc-snow/bin/64bit/` と `.../data/`
+- Windows（ポータブル配置）: `obs-studio/obs-plugins/64bit/composite-tv.dll` と
+  `obs-studio/data/obs-plugins/composite-tv/`
+- Linux: `~/.config/obs-studio/plugins/composite-tv/bin/64bit/` と `.../data/`
 
 > CI（GitHub Actions）用のワークフローもテンプレート由来で同梱しています。
 > リポジトリを GitHub へ push すると Windows / macOS / Linux 向けの配布物を自動生成できます。
@@ -82,11 +82,11 @@ cmake --preset windows-x64          # 未構成のときだけ
 powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
 ```
 
-どちらも `release\ntsc-snow-<version>-windows-x64.exe` を生成します（ビルド →
+どちらも `release\composite-tv-<version>-windows-x64.exe` を生成します（ビルド →
 `cmake --install` → Inno Setup コンパイルまで自動）。
 
 **使う側（エンドユーザー）:** その `.exe` をダブルクリック。OBS のインストール先を
-自動検出して `obs-plugins\64bit\ntsc-snow.dll` と `data\obs-plugins\ntsc-snow\` を配置します
+自動検出して `obs-plugins\64bit\composite-tv.dll` と `data\obs-plugins\composite-tv\` を配置します
 （見つからなければ手動でフォルダ選択）。インストール後 OBS を（再）起動してください。
 アンインストールは「アプリと機能」または同梱のアンインストーラから。
 
@@ -96,7 +96,7 @@ powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
 ## 使い方
 
 1. OBS で任意のソースを右クリック →「フィルタ」。
-2. エフェクトフィルタに「**NTSC 砂嵐 (NTSC Snow)**」を追加。
+2. エフェクトフィルタに「**コンポジットTV (Composite TV)**」を追加。
 3. パラメータを調整します。
 
 ### 画面全体（シーン）に適用する
@@ -107,7 +107,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 
 1. ソース一覧の空白を右クリック →「フィルタ」、または対象シーンを選んでフィルタを開く。
    （シーンのフィルタは、シーンを選択した状態で「フィルタ」から開けます）
-2. エフェクトフィルタに「**NTSC 砂嵐**」を追加。
+2. エフェクトフィルタに「**コンポジットTV**」を追加。
 
 > **全シーン共通にしたいとき（マスターシーン方式）**
 > 「マスター」シーンを 1 つ作り、その中に他のシーンを**シーンソースとして入れ子**で配置し、
@@ -117,18 +117,18 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 > なお OBS には「エンコード後の最終ミックスそのもの（シーン切替やトランジションを含む
 > 放送出力）」にフィルタを差す仕組みはありません。シーン単位が実質的な最上位です。
 
-**NTSC 砂嵐 ドック**の「映像ソース」ドロップダウンには、フィルタを持つソースに加えて
+**コンポジットTV ドック**の「映像ソース」ドロップダウンには、フィルタを持つソースに加えて
 **シーンも表示**されるので、シーン全体の砂嵐量や電源もドックからライブ操作できます
 （一覧が古い場合は「更新」を押してください）。
 
 ### 音声（TV スピーカー音）
 
 無信号時の「サー」というノイズや、映像時の弱いインターキャリア音は、**独立した
-音声フィルタ「NTSC 音声」**で再現します。映像フィルタは映像ソースに付いていて音声を
+音声フィルタ「コンポジットTV 音声」**で再現します。映像フィルタは映像ソースに付いていて音声を
 持たないため、音声は別途、音を出すソースに付けます。
 
 1. 音を出したいソース（**マイク**／**デスクトップ音声**など）を右クリック →「フィルタ」。
-2. **音声フィルタ**に「**NTSC 音声**」を追加。
+2. **音声フィルタ**に「**コンポジットTV 音声**」を追加。
 3. ドックで「**音声ソース**」にそのソースを選ぶと、**電界強度スライダー・電源ボタンが
    映像と音声の両方を同時に制御**します。
 
@@ -152,7 +152,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 | ドロップアウト | 表示 | 白い横筋がランダムに走る（テープ傷） |
 
 **一時発動**: ドックの「**グリッチ発動！**」ボタン、または 設定 → ホットキー の
-「**NTSC 砂嵐: グリッチ発動**」で、数百 ms だけ一気に暴れて自然に収まります
+「**コンポジットTV: グリッチ発動**」で、数百 ms だけ一気に暴れて自然に収まります
 （長さは「一時発動の長さ」で調整）。グループが OFF でもボタンだけは効きます。
 
 **おすすめの組み合わせ**
@@ -172,7 +172,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 
 **発動方法:**
 - ドックの「**消磁**」ボタン（映像と音が同時に発動）
-- 設定 → ホットキー の「**NTSC 砂嵐: 消磁**」「**NTSC 音声: 消磁**」
+- 設定 → ホットキー の「**コンポジットTV: 消磁**」「**コンポジットTV 音声: 消磁**」
   （**同じキーを両方に割り当てる**と、キー一発で映像と音が揃って発動します）
 
 **調整:** 「消磁の長さ」（0.3〜3.0秒）と「消磁の強さ」（0〜1）。派手にするなら 2.0秒／1.0、
@@ -218,7 +218,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 
 ---
 
-# OBS NTSC Snow (English)
+# OBS Composite TV (English)
 
 An OBS video filter that models the NTSC receiver signal chain to give any source a
 real-time "through-a-CRT" look and no-signal snow. It is a native C port (multi-pass
@@ -240,7 +240,7 @@ cmake --build --preset windows-x64 --config RelWithDebInfo
 ```
 
 Copy the resulting module and its `data/` folder into your OBS plugins directory, then add
-the **NTSC Snow** effect filter to any source.
+the **Composite TV** effect filter to any source.
 
 ### Windows installer
 
@@ -252,8 +252,8 @@ cmake --preset windows-x64          # first time only
 powershell -ExecutionPolicy Bypass -File installer\build-installer.ps1
 ```
 
-This produces `release\ntsc-snow-<version>-windows-x64.exe`. Double-clicking it detects the
-OBS install directory and places `ntsc-snow.dll` and the `data` folder in the right spots; an
+This produces `release\composite-tv-<version>-windows-x64.exe`. Double-clicking it detects the
+OBS install directory and places `composite-tv.dll` and the `data` folder in the right spots; an
 uninstaller is registered. The build is unsigned, so SmartScreen may warn — choose
 "More info → Run anyway", and close OBS before installing.
 
@@ -273,11 +273,11 @@ stage: multipath **ghosting** (before Y/C separation, so it smears colour; a neg
 gives a leading ghost), an **interference beat** (herringbone plus rainbow cross-colour),
 **vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
 bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Glitch!** button
-and the *NTSC Snow: trigger glitch* hotkey fire a momentary burst that settles on its own.
+and the *Composite TV: trigger glitch* hotkey fire a momentary burst that settles on its own.
 
 ### Degauss
 
-The dock's **Degauss** button (or the *NTSC Snow: degauss* / *NTSC Audio: degauss* hotkeys)
+The dock's **Degauss** button (or the *Composite TV: degauss* / *Composite TV Audio: degauss* hotkeys)
 runs the demagnetising coil: a decaying AC field ripples the raster, pulls red and blue apart
 worse towards the edges, floats rainbow purity blotches over the picture, and sounds the
 low "boing" — all settling in about a second. Length and strength are adjustable, and the
@@ -285,7 +285,7 @@ whole path is skipped when idle, so it costs nothing the rest of the time.
 
 ### Audio
 
-The no-signal hiss and faint intercarrier tone are a **separate "NTSC Audio" filter** (the
+The no-signal hiss and faint intercarrier tone are a **separate "Composite TV Audio" filter** (the
 video filter sits on a video source that carries no audio). Add it to an audio-producing
 source (mic, desktop audio), then pick that source under the dock's **Audio source**: the one
 field-strength slider and power button now drive both picture and sound, ducking the source

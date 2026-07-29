@@ -1,8 +1,8 @@
 /*
-NTSC Snow — control dock
+Composite TV — control dock
 Copyright (C) 2026
 
-A dockable panel that drives one source's NTSC Snow filter: a power on/off
+A dockable panel that drives one source's Composite TV filter: a power on/off
 button (triggers the CRT warm-up / collapse animation) and a field-strength
 slider (clean picture .. snow). The target source is chosen from a drop-down
 and can be locked to a single source.
@@ -36,13 +36,13 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <cstring>
 
-#include "ntsc-dock.h"
+#include "composite-tv-dock.h"
 
-static const char *FILTER_ID = "ntsc_snow_filter";
-static const char *AUDIO_FILTER_ID = "ntsc_snow_audio";
+static const char *FILTER_ID = "composite_tv_filter";
+static const char *AUDIO_FILTER_ID = "composite_tv_audio";
 
 /* Where the chosen targets are remembered between runs. */
-static const char *CFG_SECTION = "NTSCSnow";
+static const char *CFG_SECTION = "CompositeTV";
 static const char *CFG_VIDEO = "VideoSource";
 static const char *CFG_AUDIO = "AudioSource";
 
@@ -210,8 +210,8 @@ static void sync_widgets()
 		g_slider->blockSignals(true);
 		g_slider->setValue((int)(obs_data_get_double(s, "field_strength") * 100.0 + 0.5));
 		g_slider->blockSignals(false);
-		g_power->setText(T(obs_data_get_bool(s, "power") ? "NTSCSnow.Dock.PowerOff"
-								: "NTSCSnow.Dock.PowerOn"));
+		g_power->setText(T(obs_data_get_bool(s, "power") ? "CompositeTV.Dock.PowerOff"
+								: "CompositeTV.Dock.PowerOn"));
 	});
 }
 
@@ -235,29 +235,29 @@ static void frontend_event(enum obs_frontend_event event, void *)
 		refill_targets();
 }
 
-void ntsc_dock_register(void)
+void composite_tv_dock_register(void)
 {
 	QWidget *root = new QWidget();
 	QVBoxLayout *layout = new QVBoxLayout(root);
 
 	/* video target selector */
 	QHBoxLayout *vid_row = new QHBoxLayout();
-	vid_row->addWidget(new QLabel(T("NTSCSnow.Dock.Source")));
+	vid_row->addWidget(new QLabel(T("CompositeTV.Dock.Source")));
 	QComboBox *vid_combo = new QComboBox();
 	vid_row->addWidget(vid_combo, 1);
 	layout->addLayout(vid_row);
 
 	/* audio target selector */
 	QHBoxLayout *aud_row = new QHBoxLayout();
-	aud_row->addWidget(new QLabel(T("NTSCSnow.Dock.AudioSource")));
+	aud_row->addWidget(new QLabel(T("CompositeTV.Dock.AudioSource")));
 	QComboBox *aud_combo = new QComboBox();
-	QPushButton *refresh = new QPushButton(T("NTSCSnow.Dock.Refresh"));
+	QPushButton *refresh = new QPushButton(T("CompositeTV.Dock.Refresh"));
 	aud_row->addWidget(aud_combo, 1);
 	aud_row->addWidget(refresh);
 	layout->addLayout(aud_row);
 
 	/* field-strength slider (drives both picture and sound) */
-	layout->addWidget(new QLabel(T("NTSCSnow.FieldStrength")));
+	layout->addWidget(new QLabel(T("CompositeTV.FieldStrength")));
 	QSlider *slider = new QSlider(Qt::Horizontal);
 	slider->setRange(0, 100);
 	slider->setValue(100);
@@ -265,9 +265,9 @@ void ntsc_dock_register(void)
 
 	/* The three actions share one row: power (drives picture and sound), a
 	 * momentary glitch burst, and the degauss coil. */
-	QPushButton *power = new QPushButton(T("NTSCSnow.Dock.PowerOff"));
-	QPushButton *glitch = new QPushButton(T("NTSCSnow.Dock.Glitch"));
-	QPushButton *degauss = new QPushButton(T("NTSCSnow.Dock.Degauss"));
+	QPushButton *power = new QPushButton(T("CompositeTV.Dock.PowerOff"));
+	QPushButton *glitch = new QPushButton(T("CompositeTV.Dock.Glitch"));
+	QPushButton *degauss = new QPushButton(T("CompositeTV.Dock.Degauss"));
 	QHBoxLayout *btn_row = new QHBoxLayout();
 	btn_row->addWidget(power, 1);
 	btn_row->addWidget(glitch, 1);
@@ -315,10 +315,10 @@ void ntsc_dock_register(void)
 	refill_targets();
 	obs_frontend_add_event_callback(frontend_event, nullptr);
 
-	obs_frontend_add_dock_by_id("ntsc_snow_dock", obs_module_text("NTSCSnow.Dock"), root);
+	obs_frontend_add_dock_by_id("composite_tv_dock", obs_module_text("CompositeTV.Dock"), root);
 }
 
-void ntsc_dock_unregister(void)
+void composite_tv_dock_unregister(void)
 {
 	obs_frontend_remove_event_callback(frontend_event, nullptr);
 	g_vid_combo = nullptr;

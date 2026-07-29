@@ -1,5 +1,5 @@
 /*
-NTSC Snow — OBS video filter
+Composite TV — OBS video filter
 Copyright (C) 2026
 
 This program is free software; you can redistribute it and/or modify
@@ -20,4 +20,4 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <obs-module.h>
 
-extern struct obs_source_info ntsc_snow_filter_info;
+extern struct obs_source_info composite_tv_filter_info;

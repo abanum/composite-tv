@@ -4,7 +4,7 @@ rem  build-installer.bat  --  double-click to build the Windows installer
 rem
 rem  Runs build-installer.ps1, which does:
 rem    cmake --build  ->  cmake --install  ->  Inno Setup (ISCC)
-rem  and writes  release\ntsc-snow-<version>-windows-x64.exe
+rem  and writes  release\composite-tv-<version>-windows-x64.exe
 rem
 rem  Prerequisites (one time):
 rem    * cmake --preset windows-x64      (configure the project once)

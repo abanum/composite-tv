@@ -1,5 +1,5 @@
 /*
- * ntsc-snow.effect - NTSC composite / snow simulation for OBS
+ * composite-tv.effect - NTSC composite / snow simulation for OBS
  *
  * Ported from the WebGL2 "NTSC Snow Simulator" (https://github.com/abanum/ZAA,
  * MIT licensed). The receiver signal chain is modelled rather than faked:

@@ -30,7 +30,7 @@ Set-Location $Root
 $spec = Get-Content -Raw -Encoding UTF8 (Join-Path $Root 'buildspec.json') | ConvertFrom-Json
 $version = $spec.version
 if ([string]::IsNullOrWhiteSpace($version)) { throw "version missing in buildspec.json" }
-Write-Host "NTSC Snow installer build - version $version ($Configuration)" -ForegroundColor Cyan
+Write-Host "Composite TV installer build - version $version ($Configuration)" -ForegroundColor Cyan
 
 # --- build + install tree -------------------------------------------------
 Write-Host "==> cmake --build" -ForegroundColor Green
@@ -42,7 +42,7 @@ Write-Host "==> cmake --install -> $prefix" -ForegroundColor Green
 cmake --install build_x64 --prefix $prefix --config $Configuration
 if ($LASTEXITCODE -ne 0) { throw "cmake install failed ($LASTEXITCODE)" }
 
-$dll = Join-Path $prefix 'ntsc-snow\bin\64bit\ntsc-snow.dll'
+$dll = Join-Path $prefix 'composite-tv\bin\64bit\composite-tv.dll'
 if (-not (Test-Path $dll)) { throw "expected payload not found: $dll" }
 
 # --- locate ISCC.exe (Inno Setup compiler) -------------------------------
@@ -94,11 +94,11 @@ if (-not $isccExe) {
 Write-Host "==> ISCC: $isccExe" -ForegroundColor Green
 
 # --- compile installer ----------------------------------------------------
-$iss = Join-Path $PSScriptRoot 'ntsc-snow.iss'
+$iss = Join-Path $PSScriptRoot 'composite-tv.iss'
 & $isccExe "/DAppVersion=$version" $iss
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)" }
 
-$out = Join-Path $Root "release\ntsc-snow-$version-windows-x64.exe"
+$out = Join-Path $Root "release\composite-tv-$version-windows-x64.exe"
 if (Test-Path $out) {
     Write-Host ""
     Write-Host "DONE: $out" -ForegroundColor Cyan

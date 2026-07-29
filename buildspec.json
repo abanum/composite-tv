@@ -33,11 +33,11 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.abanum.ntsc-snow"
+            "bundleId": "com.abanum.composite-tv"
         }
     },
-    "name": "ntsc-snow",
-    "displayName": "NTSC Snow",
+    "name": "composite-tv",
+    "displayName": "Composite TV",
     "version": "1.0.0",
     "author": "abanum",
     "website": "https://github.com/abanum/ZAA",

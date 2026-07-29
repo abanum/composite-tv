@@ -1,5 +1,5 @@
 /*
-NTSC Snow — OBS video filter
+Composite TV — OBS video filter
 Copyright (C) 2026
 
 Ported from the WebGL2 "NTSC Snow Simulator" (https://github.com/abanum/ZAA, MIT).
@@ -19,7 +19,7 @@ You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
-#include "ntsc-snow-filter.h"
+#include "composite-tv-filter.h"
 
 #include <obs-module.h>
 #include <graphics/graphics.h>
@@ -51,7 +51,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 enum power_state { POWER_OFF = 0, POWER_WARMING, POWER_ON, POWER_SHUTTING };
 
-struct ntsc_snow {
+struct composite_tv {
 	obs_source_t *source;
 	gs_effect_t *effect;
 
@@ -225,7 +225,7 @@ static float detect_norm_inv(float fcn)
  * standard - it is a property of the signal, not something a receiver fault
  * changes - so it only has to be rescaled when the frame is drawn with a
  * different line count. */
-static inline float bar_lines(const struct ntsc_snow *f)
+static inline float bar_lines(const struct composite_tv *f)
 {
 	return (float)f->scan_lines * ((float)VBLANK_LINES / (float)ACTIVE_LINES);
 }
@@ -244,7 +244,7 @@ static inline float ease_out_expo(float x)
 	return x >= 1.0f ? 1.0f : 1.0f - powf(2.0f, -10.0f * x);
 }
 
-static void power_advance(struct ntsc_snow *f, float dt)
+static void power_advance(struct composite_tv *f, float dt)
 {
 	/* edge-triggered transitions from the target 'powered' state */
 	if (f->powered && (f->power_state == POWER_OFF || f->power_state == POWER_SHUTTING)) {
@@ -274,7 +274,7 @@ struct power_gfx {
 	float flash;
 };
 
-static struct power_gfx power_uniforms(const struct ntsc_snow *f)
+static struct power_gfx power_uniforms(const struct composite_tv *f)
 {
 	struct power_gfx g = {0.0f, 1.0f, 1.0f, 0.0f};
 	float t = f->power_elapsed;
@@ -312,12 +312,12 @@ static struct power_gfx power_uniforms(const struct ntsc_snow *f)
 static const char *ntsc_get_name(void *unused)
 {
 	UNUSED_PARAMETER(unused);
-	return obs_module_text("NTSCSnow.Name");
+	return obs_module_text("CompositeTV.Name");
 }
 
 static void ntsc_update(void *data, obs_data_t *s)
 {
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	f->field_strength = (float)obs_data_get_double(s, "field_strength");
 	f->noise_floor = (float)obs_data_get_double(s, "noise_floor");
 	f->yc_mode = (int)obs_data_get_int(s, "yc_mode");
@@ -416,7 +416,7 @@ static void ntsc_glitch_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotke
 	UNUSED_PARAMETER(hotkey);
 	if (!pressed)
 		return;
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	f->burst = 1.0f;
 }
 
@@ -427,28 +427,28 @@ static void ntsc_degauss_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotk
 	UNUSED_PARAMETER(hotkey);
 	if (!pressed)
 		return;
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	f->degauss = 1.0f;
 }
 
 static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 {
-	struct ntsc_snow *f = bzalloc(sizeof(struct ntsc_snow));
+	struct composite_tv *f = bzalloc(sizeof(struct composite_tv));
 	f->source = source;
-	f->glitch_hotkey = obs_hotkey_register_source(source, "ntsc_snow.glitch",
-						      obs_module_text("NTSCSnow.Hotkey.Glitch"),
+	f->glitch_hotkey = obs_hotkey_register_source(source, "composite_tv.glitch",
+						      obs_module_text("CompositeTV.Hotkey.Glitch"),
 						      ntsc_glitch_hotkey, f);
-	f->degauss_hotkey = obs_hotkey_register_source(source, "ntsc_snow.degauss",
-						       obs_module_text("NTSCSnow.Hotkey.Degauss"),
+	f->degauss_hotkey = obs_hotkey_register_source(source, "composite_tv.degauss",
+						       obs_module_text("CompositeTV.Hotkey.Degauss"),
 						       ntsc_degauss_hotkey, f);
 
-	char *path = obs_module_file("effects/ntsc-snow.effect");
+	char *path = obs_module_file("effects/composite-tv.effect");
 	obs_enter_graphics();
 	char *errors = NULL;
 	f->effect = gs_effect_create_from_file(path, &errors);
 	obs_leave_graphics();
 	if (!f->effect) {
-		obs_log(LOG_ERROR, "Failed to load ntsc-snow.effect: %s", errors ? errors : "(unknown)");
+		obs_log(LOG_ERROR, "Failed to load composite-tv.effect: %s", errors ? errors : "(unknown)");
 	}
 	bfree(errors);
 	bfree(path);
@@ -474,7 +474,7 @@ static void free_texrender(gs_texrender_t **tr)
 
 static void ntsc_destroy(void *data)
 {
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->glitch_hotkey);
 	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
@@ -530,12 +530,12 @@ static void target_end(gs_texrender_t *tr)
 	gs_texrender_end(tr);
 }
 
-static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy);
+static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, uint32_t cy);
 
 /* Render one full-screen technique into a texrender; returns its texture.
  * Applying the parameters in here - rather than at each call site - is what
  * makes the libobs quirk described on apply_params() impossible to trip over. */
-static gs_texture_t *run_pass(struct ntsc_snow *f, gs_effect_t *e, gs_texrender_t *tr, uint32_t w, uint32_t h,
+static gs_texture_t *run_pass(struct composite_tv *f, gs_effect_t *e, gs_texrender_t *tr, uint32_t w, uint32_t h,
 			      const char *tech, gs_texture_t *img, uint32_t cx, uint32_t cy)
 {
 	if (!target_begin(tr, w, h, false))
@@ -555,7 +555,7 @@ static gs_texture_t *run_pass(struct ntsc_snow *f, gs_effect_t *e, gs_texrender_
  * this has to run again before every pass or the D3D11 backend silently skips
  * the draw ("Not all shader parameters were set"). run_pass() is the only
  * caller precisely so that nobody has to remember this. */
-static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint32_t cy)
+static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, uint32_t cy)
 {
 	/* Fields alternate 0,PI,0,PI over the four-field sequence. */
 	const float field_base_phase = (f->field_counter & 1u) ? (float)NS_PI : 0.0f;
@@ -679,7 +679,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 static void ntsc_render(void *data, gs_effect_t *unused)
 {
 	UNUSED_PARAMETER(unused);
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	obs_source_t *target = obs_filter_get_target(f->source);
 
 	if (!f->effect || !target) {
@@ -824,106 +824,106 @@ static void ntsc_props_destroyed(void *param)
 
 static obs_properties_t *ntsc_get_properties(void *data)
 {
-	struct ntsc_snow *f = data;
+	struct composite_tv *f = data;
 	obs_properties_t *p = obs_properties_create();
 
 	if (f && f->source)
 		obs_properties_set_param(p, obs_source_get_weak_source(f->source), ntsc_props_destroyed);
 
-	obs_properties_add_text(p, "hint", obs_module_text("NTSCSnow.Hint"), OBS_TEXT_INFO);
-	obs_properties_add_bool(p, "power", obs_module_text("NTSCSnow.Power"));
-	obs_properties_add_float_slider(p, "field_strength", obs_module_text("NTSCSnow.FieldStrength"), 0.0, 1.0,
+	obs_properties_add_text(p, "hint", obs_module_text("CompositeTV.Hint"), OBS_TEXT_INFO);
+	obs_properties_add_bool(p, "power", obs_module_text("CompositeTV.Power"));
+	obs_properties_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0,
 					0.01);
-	obs_properties_add_float_slider(p, "noise_floor", obs_module_text("NTSCSnow.NoiseFloor"), 0.0, 0.30, 0.01);
+	obs_properties_add_float_slider(p, "noise_floor", obs_module_text("CompositeTV.NoiseFloor"), 0.0, 0.30, 0.01);
 
-	obs_property_t *yc = obs_properties_add_list(p, "yc_mode", obs_module_text("NTSCSnow.YCMode"),
+	obs_property_t *yc = obs_properties_add_list(p, "yc_mode", obs_module_text("CompositeTV.YCMode"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(yc, obs_module_text("NTSCSnow.YCMode.Bandpass"), 0);
-	obs_property_list_add_int(yc, obs_module_text("NTSCSnow.YCMode.Comb2"), 1);
-	obs_property_list_add_int(yc, obs_module_text("NTSCSnow.YCMode.Comb3"), 2);
+	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Bandpass"), 0);
+	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Comb2"), 1);
+	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Comb3"), 2);
 
-	obs_properties_add_float_slider(p, "chroma_band_i", obs_module_text("NTSCSnow.ChromaBandI"), 0.4, 2.0, 0.1);
-	obs_properties_add_float_slider(p, "chroma_band_q", obs_module_text("NTSCSnow.ChromaBandQ"), 0.2, 1.3, 0.1);
-	obs_properties_add_float_slider(p, "enc_chroma_gain", obs_module_text("NTSCSnow.EncChromaGain"), 0.0, 1.5,
+	obs_properties_add_float_slider(p, "chroma_band_i", obs_module_text("CompositeTV.ChromaBandI"), 0.4, 2.0, 0.1);
+	obs_properties_add_float_slider(p, "chroma_band_q", obs_module_text("CompositeTV.ChromaBandQ"), 0.2, 1.3, 0.1);
+	obs_properties_add_float_slider(p, "enc_chroma_gain", obs_module_text("CompositeTV.EncChromaGain"), 0.0, 1.5,
 					0.05);
 
-	obs_property_t *scr = obs_properties_add_list(p, "screen_aspect", obs_module_text("NTSCSnow.ScreenAspect"),
+	obs_property_t *scr = obs_properties_add_list(p, "screen_aspect", obs_module_text("CompositeTV.ScreenAspect"),
 						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.Source"), 0);
-	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.43"), 1);
-	obs_property_list_add_int(scr, obs_module_text("NTSCSnow.ScreenAspect.169"), 2);
+	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.Source"), 0);
+	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.43"), 1);
+	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.169"), 2);
 
-	obs_property_t *asp = obs_properties_add_list(p, "aspect_mode", obs_module_text("NTSCSnow.AspectMode"),
+	obs_property_t *asp = obs_properties_add_list(p, "aspect_mode", obs_module_text("CompositeTV.AspectMode"),
 						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(asp, obs_module_text("NTSCSnow.AspectMode.Letterbox"), 0);
-	obs_property_list_add_int(asp, obs_module_text("NTSCSnow.AspectMode.Stretch"), 1);
+	obs_property_list_add_int(asp, obs_module_text("CompositeTV.AspectMode.Letterbox"), 0);
+	obs_property_list_add_int(asp, obs_module_text("CompositeTV.AspectMode.Stretch"), 1);
 
-	obs_properties_add_float_slider(p, "agc_level", obs_module_text("NTSCSnow.AgcLevel"), 0.20, 0.95, 0.01);
-	obs_properties_add_float_slider(p, "agc_jitter", obs_module_text("NTSCSnow.AgcJitter"), 0.0, 0.40, 0.01);
-	obs_properties_add_float_slider(p, "if_bandwidth", obs_module_text("NTSCSnow.IfBandwidth"), 2.0, 7.0, 0.1);
+	obs_properties_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01);
+	obs_properties_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01);
+	obs_properties_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1);
 
-	obs_properties_add_float_slider(p, "luma_bandwidth", obs_module_text("NTSCSnow.LumaBandwidth"), 1.0, 4.2, 0.1);
-	obs_properties_add_float_slider(p, "chroma_gain", obs_module_text("NTSCSnow.ChromaGain"), 0.0, 2.0, 0.01);
-	obs_properties_add_bool(p, "color_killer", obs_module_text("NTSCSnow.ColorKiller"));
-	obs_properties_add_float_slider(p, "chroma_drift", obs_module_text("NTSCSnow.ChromaDrift"), 0.0, 3.0, 0.05);
-	obs_properties_add_float_slider(p, "contrast", obs_module_text("NTSCSnow.Contrast"), 0.3, 2.0, 0.01);
-	obs_properties_add_float_slider(p, "brightness", obs_module_text("NTSCSnow.Brightness"), -0.3, 0.3, 0.01);
+	obs_properties_add_float_slider(p, "luma_bandwidth", obs_module_text("CompositeTV.LumaBandwidth"), 1.0, 4.2, 0.1);
+	obs_properties_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01);
+	obs_properties_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"));
+	obs_properties_add_float_slider(p, "chroma_drift", obs_module_text("CompositeTV.ChromaDrift"), 0.0, 3.0, 0.05);
+	obs_properties_add_float_slider(p, "contrast", obs_module_text("CompositeTV.Contrast"), 0.3, 2.0, 0.01);
+	obs_properties_add_float_slider(p, "brightness", obs_module_text("CompositeTV.Brightness"), -0.3, 0.3, 0.01);
 
-	obs_property_t *sl = obs_properties_add_list(p, "scan_lines", obs_module_text("NTSCSnow.ScanLines"),
+	obs_property_t *sl = obs_properties_add_list(p, "scan_lines", obs_module_text("CompositeTV.ScanLines"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.486"), 486);
-	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.243"), 243);
-	obs_property_list_add_int(sl, obs_module_text("NTSCSnow.ScanLines.162"), 162);
+	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.486"), 486);
+	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.243"), 243);
+	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.162"), 162);
 
-	obs_properties_add_bool(p, "line_skip", obs_module_text("NTSCSnow.LineSkip"));
-	obs_properties_add_float_slider(p, "gap_level", obs_module_text("NTSCSnow.GapLevel"), 0.0, 1.0, 0.05);
+	obs_properties_add_bool(p, "line_skip", obs_module_text("CompositeTV.LineSkip"));
+	obs_properties_add_float_slider(p, "gap_level", obs_module_text("CompositeTV.GapLevel"), 0.0, 1.0, 0.05);
 
-	obs_properties_add_bool(p, "interlace", obs_module_text("NTSCSnow.Interlace"));
-	obs_properties_add_float_slider(p, "persistence", obs_module_text("NTSCSnow.Persistence"), 0.0, 0.75, 0.01);
-	obs_properties_add_float_slider(p, "spot_v", obs_module_text("NTSCSnow.SpotV"), 0.30, 1.60, 0.01);
-	obs_properties_add_float_slider(p, "spot_h", obs_module_text("NTSCSnow.SpotH"), 0.30, 2.50, 0.01);
-	obs_properties_add_float_slider(p, "scanline", obs_module_text("NTSCSnow.Scanline"), 0.0, 0.60, 0.01);
+	obs_properties_add_bool(p, "interlace", obs_module_text("CompositeTV.Interlace"));
+	obs_properties_add_float_slider(p, "persistence", obs_module_text("CompositeTV.Persistence"), 0.0, 0.75, 0.01);
+	obs_properties_add_float_slider(p, "spot_v", obs_module_text("CompositeTV.SpotV"), 0.30, 1.60, 0.01);
+	obs_properties_add_float_slider(p, "spot_h", obs_module_text("CompositeTV.SpotH"), 0.30, 2.50, 0.01);
+	obs_properties_add_float_slider(p, "scanline", obs_module_text("CompositeTV.Scanline"), 0.0, 0.60, 0.01);
 
 	/* Inspection aid, kept next to the controls it exists to make judgeable.
 	 * It magnifies the output, so it winds back to 1.0 when the dialog is
 	 * closed - the hint below says so. */
-	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("NTSCSnow.PreviewZoom"), 1.0, 8.0, 0.1);
-	obs_properties_add_text(p, "zoom_hint", obs_module_text("NTSCSnow.ZoomHint"), OBS_TEXT_INFO);
-	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("NTSCSnow.ZoomX"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("NTSCSnow.ZoomY"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("CompositeTV.PreviewZoom"), 1.0, 8.0, 0.1);
+	obs_properties_add_text(p, "zoom_hint", obs_module_text("CompositeTV.ZoomHint"), OBS_TEXT_INFO);
+	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("CompositeTV.ZoomX"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("CompositeTV.ZoomY"), 0.0, 1.0, 0.01);
 
 	/* tube-face colour structure */
-	obs_property_t *mt = obs_properties_add_list(p, "mask_type", obs_module_text("NTSCSnow.MaskType"),
+	obs_property_t *mt = obs_properties_add_list(p, "mask_type", obs_module_text("CompositeTV.MaskType"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
-	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Off"), 0);
-	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Slot"), 1);
-	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Dot"), 2);
-	obs_property_list_add_int(mt, obs_module_text("NTSCSnow.MaskType.Grille"), 3);
-	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("NTSCSnow.MaskStrength"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "mask_width", obs_module_text("NTSCSnow.MaskWidth"), 0.20, 1.00, 0.01);
-	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("NTSCSnow.MaskPitch"), 150.0, 900.0, 10.0);
-	obs_properties_add_float_slider(p, "wire_width", obs_module_text("NTSCSnow.WireWidth"), 0.01, 4.0, 0.01);
+	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Off"), 0);
+	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Slot"), 1);
+	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Dot"), 2);
+	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Grille"), 3);
+	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("CompositeTV.MaskStrength"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(p, "mask_width", obs_module_text("CompositeTV.MaskWidth"), 0.20, 1.00, 0.01);
+	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("CompositeTV.MaskPitch"), 150.0, 900.0, 10.0);
+	obs_properties_add_float_slider(p, "wire_width", obs_module_text("CompositeTV.WireWidth"), 0.01, 4.0, 0.01);
 
-	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
-	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
-	obs_properties_add_float_slider(p, "overscan", obs_module_text("NTSCSnow.Overscan"), 0.0, 0.08, 0.005);
-	obs_properties_add_float_slider(p, "degauss_len", obs_module_text("NTSCSnow.DegaussLen"), 0.3, 3.0, 0.1);
-	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("NTSCSnow.DegaussStrength"), 0.0, 1.0,
+	obs_properties_add_float_slider(p, "curvature", obs_module_text("CompositeTV.Curvature"), 0.0, 0.12, 0.005);
+	obs_properties_add_float_slider(p, "vignette", obs_module_text("CompositeTV.Vignette"), 0.0, 0.80, 0.01);
+	obs_properties_add_float_slider(p, "overscan", obs_module_text("CompositeTV.Overscan"), 0.0, 0.08, 0.005);
+	obs_properties_add_float_slider(p, "degauss_len", obs_module_text("CompositeTV.DegaussLen"), 0.3, 3.0, 0.1);
+	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("CompositeTV.DegaussStrength"), 0.0, 1.0,
 					0.01);
 
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
-	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("NTSCSnow.GhostGain"), 0.0, 0.8, 0.01);
-	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("NTSCSnow.GhostDelay"), -60.0, 120.0, 1.0);
-	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("NTSCSnow.VRollSpeed"), -2.0, 2.0, 0.01);
-	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("NTSCSnow.HJitter"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "flagging", obs_module_text("NTSCSnow.Flagging"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "head_switch", obs_module_text("NTSCSnow.HeadSwitch"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "dropout", obs_module_text("NTSCSnow.Dropout"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "beat_gain", obs_module_text("NTSCSnow.BeatGain"), 0.0, 0.5, 0.01);
-	obs_properties_add_float_slider(g, "beat_freq", obs_module_text("NTSCSnow.BeatFreq"), 0.1, 5.0, 0.01);
-	obs_properties_add_float_slider(g, "burst_len", obs_module_text("NTSCSnow.BurstLen"), 0.1, 2.0, 0.05);
-	obs_properties_add_group(p, "glitch_enable", obs_module_text("NTSCSnow.Glitch"), OBS_GROUP_CHECKABLE, g);
+	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01);
+	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0);
+	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01);
+	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01);
+	obs_properties_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01);
+	obs_properties_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01);
+	obs_properties_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05);
+	obs_properties_add_group(p, "glitch_enable", obs_module_text("CompositeTV.Glitch"), OBS_GROUP_CHECKABLE, g);
 
 	return p;
 }
@@ -983,8 +983,8 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "burst_len", 0.4);
 }
 
-struct obs_source_info ntsc_snow_filter_info = {
-	.id = "ntsc_snow_filter",
+struct obs_source_info composite_tv_filter_info = {
+	.id = "composite_tv_filter",
 	.type = OBS_SOURCE_TYPE_FILTER,
 	.output_flags = OBS_SOURCE_VIDEO,
 	.get_name = ntsc_get_name,
