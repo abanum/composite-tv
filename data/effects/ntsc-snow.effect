@@ -82,6 +82,7 @@ uniform float mask_strength;      // modulation depth
 uniform float mask_width;         // phosphor stripe half-width (fill factor)
 uniform float mask_triads;        // RGB triads across the tube width
 uniform float pixels_per_triad;   // output pixels per triad (zoom included)
+uniform float wire_width;         // damper wire shadow width, in triad pitches
 
 // Glitches
 uniform float ghost_gain;         // multipath ghost amplitude
@@ -690,14 +691,16 @@ float4 PSDisplay(VertData v) : TARGET
 
 		// Trinitron damper wires: the two tungsten wires that still the
 		// grille cast faint horizontal shadows at roughly 1/3 and 2/3
-		// height. Famously visible at any resolution, so they do not fade
-		// with the mask - only with its strength.
+		// height. They are physical objects, so their look is independent
+		// of the mask's artistic strength: fixed shadow depth, width set by
+		// its own control (in triad pitches), and no resolution fade -
+		// they are famously visible on real Trinitrons at any size.
 		if (mask_type > 2.5) {
-			float t = max(1.4 * screen_aspect / mask_triads,
+			float t = max(wire_width * screen_aspect / mask_triads,
 				      1.5 / (output_size.y * preview_zoom));
 			float sh = max(smoothstep(t, t * 0.35, abs(suv.y - 0.3333)),
 				       smoothstep(t, t * 0.35, abs(suv.y - 0.6667)));
-			col *= 1.0 - 0.45 * mask_strength * sh;
+			col *= 1.0 - 0.45 * sh;
 		}
 	}
 

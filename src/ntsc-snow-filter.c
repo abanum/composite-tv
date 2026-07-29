@@ -142,6 +142,7 @@ struct ntsc_snow {
 	float mask_strength;
 	float mask_width;   /* phosphor stripe half-width (fill factor) */
 	float mask_pitch;   /* RGB triads across the tube width */
+	float wire_width;   /* damper wire shadow width, in triad pitches */
 };
 
 /* ---- small effect-parameter setters ---------------------------------- */
@@ -334,6 +335,9 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->mask_pitch = (float)obs_data_get_double(s, "mask_pitch");
 	if (f->mask_pitch < 1.0f)
 		f->mask_pitch = 450.0f;
+	f->wire_width = (float)obs_data_get_double(s, "wire_width");
+	if (f->wire_width < 0.1f)
+		f->wire_width = 1.4f;
 
 	/* The dock fires a burst by incrementing this counter. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
@@ -559,6 +563,7 @@ static void apply_params(struct ntsc_snow *f, gs_effect_t *e, uint32_t cx, uint3
 	set_f(e, "mask_width", f->mask_width);
 	set_f(e, "mask_triads", f->mask_pitch);
 	set_f(e, "pixels_per_triad", tube_px * zoom / f->mask_pitch);
+	set_f(e, "wire_width", f->wire_width);
 
 	/* Glitches. The steady-state values were already gated by glitch_enable in
 	 * ntsc_update(); the momentary burst adds on top, so the dock button and
@@ -817,6 +822,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("NTSCSnow.MaskStrength"), 0.0, 1.0, 0.01);
 	obs_properties_add_float_slider(p, "mask_width", obs_module_text("NTSCSnow.MaskWidth"), 0.20, 1.00, 0.01);
 	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("NTSCSnow.MaskPitch"), 150.0, 900.0, 10.0);
+	obs_properties_add_float_slider(p, "wire_width", obs_module_text("NTSCSnow.WireWidth"), 0.4, 4.0, 0.05);
 
 	obs_properties_add_float_slider(p, "curvature", obs_module_text("NTSCSnow.Curvature"), 0.0, 0.12, 0.005);
 	obs_properties_add_float_slider(p, "vignette", obs_module_text("NTSCSnow.Vignette"), 0.0, 0.80, 0.01);
@@ -882,6 +888,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "mask_strength", 0.6);
 	obs_data_set_default_double(s, "mask_width", 0.62);
 	obs_data_set_default_double(s, "mask_pitch", 450.0);
+	obs_data_set_default_double(s, "wire_width", 1.4);
 
 	obs_data_set_default_bool(s, "glitch_enable", false);
 	obs_data_set_default_double(s, "ghost_gain", 0.0);
