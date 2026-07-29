@@ -432,11 +432,18 @@ float2 curve(float2 uv, float amount)
 // One phosphor stripe on the wrapped 0..3 subpixel axis: a soft window centred
 // on the channel's stripe, black in the guard band between stripes. mask_width
 // is the stripe half-width, so it sets the phosphor fill vs the black gap.
-float maskStripe(float sub, float centre)
+// halfe is the edge half-width including the pixel footprint: point-sampling a
+// stripe finer than the pixel grid beats against it and paints screen-sized
+// rainbow bands, so the edge is widened by the footprint (a box-filter
+// approximation) and an under-resolved mask converges on a neutral mix
+// instead. Widening is symmetric about the half-amplitude point, which keeps
+// the stripe's average - and so the picture brightness - unchanged.
+float maskStripe(float sub, float centre, float halfe)
 {
 	float d = abs(sub - centre);
 	d = min(d, 3.0 - d);
-	return smoothstep(mask_width, mask_width * 0.48, d);
+	float mid = mask_width * 0.74;
+	return smoothstep(mid + halfe, mid - halfe, d);
 }
 
 // RGB transmission of the tube-face colour structure at a screen position.
@@ -454,14 +461,20 @@ float3 shadowMask(float2 suv)
 	// squared). At the default width of 0.62 this is exactly 1.
 	float wgain = 0.62 / max(mask_width, 0.05);
 
+	// Pixel footprint on the subpixel axis, for the anti-alias widening.
+	float fp = 3.0 / max(pixels_per_triad, 1.0e-3);
+	float halfe = mask_width * 0.26 + fp * 0.5;
+
 	float3 w;
 	if (mask_type < 1.5) {
 		// Slot mask: vertical RGB stripes broken into slots, adjacent
 		// columns staggered by half a slot - the in-line CRT look.
-		w = float3(maskStripe(sub, 0.5), maskStripe(sub, 1.5), maskStripe(sub, 2.5));
+		w = float3(maskStripe(sub, 0.5, halfe), maskStripe(sub, 1.5, halfe),
+			   maskStripe(sub, 2.5, halfe));
 		float stagger = (fmod(floor(mx), 2.0) >= 1.0) ? 0.5 : 0.0;
 		float sy = frac(my / 1.5 + stagger);
-		w *= smoothstep(0.0, 0.12, sy) * smoothstep(1.0, 0.88, sy);
+		float eY = fp / 9.0;   // vertical footprint in slot-cell units
+		w *= smoothstep(0.0 - eY, 0.12 + eY, sy) * smoothstep(1.0 + eY, 0.88 - eY, sy);
 		w *= 3.1 * wgain;
 	} else if (mask_type < 2.5) {
 		// Delta dot mask: round phosphor dots on a hex lattice, the RGB
@@ -475,14 +488,17 @@ float3 shadowMask(float2 suv)
 			ch += 3.0;
 		float2 cell = float2(frac(u) - 0.5, frac(v) - 0.5);
 		float r = mask_width * 0.8065;   // dot radius; 0.50 at default width
-		float dotw = smoothstep(r, r * 0.56, length(cell));
+		float rc = r * 0.78;
+		float re = r * 0.22 + fp * 0.5;
+		float dotw = smoothstep(rc + re, max(rc - re, 0.0), length(cell));
 		w = dotw * float3((ch < 0.5) ? 1.0 : 0.0,
 				  (ch >= 0.5 && ch < 1.5) ? 1.0 : 0.0,
 				  (ch >= 1.5) ? 1.0 : 0.0);
 		w *= 3.4 * wgain * wgain;
 	} else {
 		// Aperture grille: unbroken vertical stripes (Trinitron).
-		w = float3(maskStripe(sub, 0.5), maskStripe(sub, 1.5), maskStripe(sub, 2.5));
+		w = float3(maskStripe(sub, 0.5, halfe), maskStripe(sub, 1.5, halfe),
+			   maskStripe(sub, 2.5, halfe));
 		w *= 2.6 * wgain;
 	}
 	return w;
