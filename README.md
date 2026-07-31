@@ -180,6 +180,65 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 **調整:** 「消磁の長さ」（0.3〜3.0秒）と「消磁の強さ」（0〜1）。派手にするなら 2.0秒／1.0、
 控えめなら 0.5秒／0.3 あたり。消磁していない間は処理をスキップするので**負荷は増えません**。
 
+### ホットキー
+
+設定 → ホットキー を開くと、フィルタを付けたソースの欄に次の項目が並びます
+（フィルタを追加したソースごとに個別に割り当てられます）。
+
+| 表示名 | 内部名 | 動作 |
+|---|---|---|
+| コンポジットTV: 電源 ON/OFF | `composite_tv.power` | 電源トグル（起動・シャットダウンのアニメーション付き） |
+| コンポジットTV: グリッチ発動 | `composite_tv.glitch` | 数百 ms のグリッチバースト |
+| コンポジットTV: 消磁 | `composite_tv.degauss` | 消磁（映像側） |
+| コンポジットTV: 電源 ON/OFF ※音声フィルタ側 | `composite_tv_audio.power` | 電源トグル（音声側） |
+| コンポジットTV: 消磁 ※音声フィルタ側 | `composite_tv_audio.degauss` | 消磁音 |
+
+映像と音声で同じ表示名の項目が（それぞれのソースの欄に）現れるので、**同じキーを
+両方に割り当てる**と、キー一発で映像と音が揃って動きます（電源・消磁とも）。
+
+Stream Deck などの左手デバイスは、標準の「ホットキー」アクションでここに割り当てた
+キーを送れば操作できます（OBS のホットキーはウィンドウが非アクティブでも効きます）。
+
+### obs-websocket からの操作
+
+OBS 28 以降に内蔵の obs-websocket (5.x) から、ホットキーを名前で直接叩けます。
+`contextName` には**フィルタ名**（フィルタ一覧に表示される名前。既定は「コンポジットTV」）を
+指定します（`contextName` 対応は obs-websocket 5.4 / OBS 30.2 以降）。
+
+```json
+{
+  "requestType": "TriggerHotkeyByName",
+  "requestData": {
+    "hotkeyName": "composite_tv.glitch",
+    "contextName": "コンポジットTV"
+  }
+}
+```
+
+`hotkeyName` は上の表の内部名（`composite_tv.power` / `composite_tv.glitch` /
+`composite_tv.degauss` / `composite_tv_audio.power` / `composite_tv_audio.degauss`）。
+複数のソースに同名のフィルタが付いていると区別できないので、その場合はフィルタ名を
+ソースごとに変えてください。
+
+電源をトグルではなく **ON/OFF どちらかに確定**させたい場合や、電界強度などの
+パラメータを動かしたい場合は `SetSourceFilterSettings` を使います
+（`sourceName` はフィルタが付いている**ソース側**の名前です）。
+
+```json
+{
+  "requestType": "SetSourceFilterSettings",
+  "requestData": {
+    "sourceName": "対象ソース名",
+    "filterName": "コンポジットTV",
+    "filterSettings": { "power": false, "field_strength": 0.5 }
+  }
+}
+```
+
+設定キーは保存済みシーンコレクション（JSON）や [docs/parameters.md](docs/parameters.md) で
+確認できます。グリッチ／消磁をこの経路で発動したいときは、`glitch_pulse` /
+`degauss_pulse` に**前回と違う整数**を書き込むと 1 回発火します（ドックと同じ仕組み）。
+
 ### 試すと分かりやすい設定
 
 - **電界強度**をゆっくり下げると、カラー映像 → ざらつき → 白黒の砂嵐へ連続的に遷移します。
@@ -292,6 +351,23 @@ video filter sits on a video source that carries no audio). Add it to an audio-p
 source (mic, desktop audio), then pick that source under the dock's **Audio source**: the one
 field-strength slider and power button now drive both picture and sound, ducking the source
 audio into full static as field strength falls.
+
+### Hotkeys and obs-websocket
+
+Settings → Hotkeys lists these per filtered source: *Composite TV: toggle power*
+(`composite_tv.power`), *Composite TV: trigger glitch* (`composite_tv.glitch`),
+*Composite TV: degauss* (`composite_tv.degauss`), plus the audio filter's own
+`composite_tv_audio.power` and `composite_tv_audio.degauss`. Bind the same key to the
+video and audio entries to fire picture and sound together. A Stream Deck (or similar)
+can drive them with its stock "Hotkey" action — OBS hotkeys work while unfocused.
+
+Over obs-websocket 5.x, trigger them by name with `TriggerHotkeyByName`, passing the
+internal name as `hotkeyName` and the **filter's name** (default "Composite TV") as
+`contextName` (needs obs-websocket 5.4 / OBS 30.2+). To set power to a definite state
+instead of toggling — or to drive any parameter such as `field_strength` — use
+`SetSourceFilterSettings` with the parent source's name, e.g.
+`"filterSettings": { "power": false }`. Writing a fresh integer to `glitch_pulse` /
+`degauss_pulse` fires a one-shot burst the same way the dock does.
 
 ### License
 

@@ -141,6 +141,7 @@ struct composite_tv {
 	double degauss_phase;
 	long long degauss_pulse;
 	obs_hotkey_id degauss_hotkey;
+	obs_hotkey_id power_hotkey;
 
 	/* inspection zoom */
 	float preview_zoom;
@@ -431,6 +432,21 @@ static void ntsc_degauss_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotk
 	f->degauss = 1.0f;
 }
 
+/* Hotkey: toggle mains power. Routed through the settings so the properties
+ * dialog and the dock stay in sync with the new state. */
+static void ntsc_power_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct composite_tv *f = data;
+	obs_data_t *s = obs_data_create();
+	obs_data_set_bool(s, "power", !f->powered);
+	obs_source_update(f->source, s);
+	obs_data_release(s);
+}
+
 static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct composite_tv *f = bzalloc(sizeof(struct composite_tv));
@@ -441,6 +457,9 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	f->degauss_hotkey = obs_hotkey_register_source(source, "composite_tv.degauss",
 						       obs_module_text("CompositeTV.Hotkey.Degauss"),
 						       ntsc_degauss_hotkey, f);
+	f->power_hotkey = obs_hotkey_register_source(source, "composite_tv.power",
+						     obs_module_text("CompositeTV.Hotkey.Power"),
+						     ntsc_power_hotkey, f);
 
 	char *path = obs_module_file("effects/composite-tv.effect");
 	obs_enter_graphics();
@@ -479,6 +498,8 @@ static void ntsc_destroy(void *data)
 		obs_hotkey_unregister(f->glitch_hotkey);
 	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->degauss_hotkey);
+	if (f->power_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->power_hotkey);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);

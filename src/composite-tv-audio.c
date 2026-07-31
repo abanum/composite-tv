@@ -67,6 +67,7 @@ struct ntsc_audio {
 	double dg_phase; /* low hum phase   */
 	long long degauss_pulse;
 	obs_hotkey_id degauss_hotkey;
+	obs_hotkey_id power_hotkey;
 };
 
 /* ---- helpers --------------------------------------------------------- */
@@ -158,6 +159,21 @@ static void na_degauss_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 	f->dg_phase = 0.0;
 }
 
+/* Hotkey: toggle mains power. Routed through the settings so the properties
+ * dialog and the dock stay in sync with the new state. */
+static void na_power_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct ntsc_audio *f = data;
+	obs_data_t *s = obs_data_create();
+	obs_data_set_bool(s, "power", !f->powered);
+	obs_source_update(f->source, s);
+	obs_data_release(s);
+}
+
 static void *na_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct ntsc_audio *f = bzalloc(sizeof(struct ntsc_audio));
@@ -165,6 +181,9 @@ static void *na_create(obs_data_t *settings, obs_source_t *source)
 	f->degauss_hotkey = obs_hotkey_register_source(source, "composite_tv_audio.degauss",
 						       obs_module_text("CompositeTV.Hotkey.Degauss"),
 						       na_degauss_hotkey, f);
+	f->power_hotkey = obs_hotkey_register_source(source, "composite_tv_audio.power",
+						     obs_module_text("CompositeTV.Hotkey.Power"),
+						     na_power_hotkey, f);
 	f->sample_rate = 48000.0;
 	for (int c = 0; c < NA_MAX_CH; c++)
 		f->prng[c] = 0x9e3779b9u ^ (uint32_t)(c * 2654435761u + 12345u);
@@ -181,6 +200,8 @@ static void na_destroy(void *data)
 	struct ntsc_audio *f = data;
 	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->degauss_hotkey);
+	if (f->power_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->power_hotkey);
 	bfree(f);
 }
 
