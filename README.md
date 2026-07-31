@@ -352,23 +352,66 @@ source (mic, desktop audio), then pick that source under the dock's **Audio sour
 field-strength slider and power button now drive both picture and sound, ducking the source
 audio into full static as field strength falls.
 
-### Hotkeys and obs-websocket
+### Hotkeys
 
-Settings → Hotkeys lists these per filtered source: *Composite TV: toggle power*
-(`composite_tv.power`), *Composite TV: trigger glitch* (`composite_tv.glitch`),
-*Composite TV: degauss* (`composite_tv.degauss`), plus the audio filter's own
-`composite_tv_audio.power` and `composite_tv_audio.degauss`. Bind the same key to the
-video and audio entries to fire picture and sound together. A Stream Deck (or similar)
-can drive them with its stock "Hotkey" action — OBS hotkeys work while unfocused.
+Settings → Hotkeys shows these entries in the section of each source the filter is
+attached to (each filtered source gets its own bindings):
 
-Over obs-websocket 5.x, trigger them by name with `TriggerHotkeyByName`, passing the
-internal name as `hotkeyName` and the **name of the source the filter is attached to**
-(the scene name when filtering a scene) as `contextName` (needs obs-websocket 5.4 /
-OBS 30.2+). To set power to a definite state
-instead of toggling — or to drive any parameter such as `field_strength` — use
-`SetSourceFilterSettings` with the parent source's name, e.g.
-`"filterSettings": { "power": false }`. Writing a fresh integer to `glitch_pulse` /
-`degauss_pulse` fires a one-shot burst the same way the dock does.
+| Display name | Internal name | Action |
+|---|---|---|
+| Composite TV: toggle power | `composite_tv.power` | Power toggle (with the warm-up / shutdown animation) |
+| Composite TV: trigger glitch | `composite_tv.glitch` | Momentary glitch burst (a few hundred ms) |
+| Composite TV: degauss | `composite_tv.degauss` | Degauss (video side) |
+| Composite TV: toggle power — audio filter | `composite_tv_audio.power` | Power toggle (audio side) |
+| Composite TV: degauss — audio filter | `composite_tv_audio.degauss` | Degauss thump |
+
+The video and audio entries share display names but appear under their own sources;
+**bind the same key to both** and one keypress fires picture and sound together
+(works for power and degauss alike).
+
+A Stream Deck (or similar) can drive them with its stock "Hotkey" action sending the
+key you bound here — OBS hotkeys work even while the window is unfocused.
+
+### Controlling over obs-websocket
+
+With the obs-websocket built into OBS 28+ (5.x), trigger the hotkeys directly by name.
+`contextName` is the **name of the source the filter is attached to** (the scene name
+when filtering a scene); it needs obs-websocket 5.4 / OBS 30.2 or later.
+
+```json
+{
+  "requestType": "TriggerHotkeyByName",
+  "requestData": {
+    "hotkeyName": "composite_tv.glitch",
+    "contextName": "your source (scene) name"
+  }
+}
+```
+
+`hotkeyName` is an internal name from the table above (`composite_tv.power` /
+`composite_tv.glitch` / `composite_tv.degauss` / `composite_tv_audio.power` /
+`composite_tv_audio.degauss`). Hotkeys are registered per filtered source, so when
+several sources carry the filter, `contextName` picks which one fires.
+
+To set power to a **definite state** instead of toggling — or to drive any parameter
+such as field strength — use `SetSourceFilterSettings` (`sourceName` is again the
+**parent source's** name):
+
+```json
+{
+  "requestType": "SetSourceFilterSettings",
+  "requestData": {
+    "sourceName": "your source (scene) name",
+    "filterName": "Composite TV",
+    "filterSettings": { "power": false, "field_strength": 0.5 }
+  }
+}
+```
+
+Setting keys can be found in a saved scene collection (JSON) or in
+[docs/parameters.md](docs/parameters.md). To fire the glitch / degauss this way,
+write **an integer different from the last one** to `glitch_pulse` / `degauss_pulse`
+and it triggers once (the same mechanism the dock uses).
 
 ### License
 
