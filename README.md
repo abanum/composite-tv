@@ -202,7 +202,7 @@ Stream Deck などの左手デバイスは、標準の「ホットキー」ア�
 ### obs-websocket からの操作
 
 OBS 28 以降に内蔵の obs-websocket (5.x) から、ホットキーを名前で直接叩けます。
-`contextName` には**フィルタ名**（フィルタ一覧に表示される名前。既定は「コンポジットTV」）を
+`contextName` には**フィルタを付けているソース名**（シーンに付けた場合はシーン名）を
 指定します（`contextName` 対応は obs-websocket 5.4 / OBS 30.2 以降）。
 
 ```json
@@ -210,15 +210,15 @@ OBS 28 以降に内蔵の obs-websocket (5.x) から、ホットキーを名前�
   "requestType": "TriggerHotkeyByName",
   "requestData": {
     "hotkeyName": "composite_tv.glitch",
-    "contextName": "コンポジットTV"
+    "contextName": "対象ソース名（シーン名）"
   }
 }
 ```
 
 `hotkeyName` は上の表の内部名（`composite_tv.power` / `composite_tv.glitch` /
 `composite_tv.degauss` / `composite_tv_audio.power` / `composite_tv_audio.degauss`）。
-複数のソースに同名のフィルタが付いていると区別できないので、その場合はフィルタ名を
-ソースごとに変えてください。
+ホットキーはフィルタを付けたソースごとに登録されるので、複数のソースで使っている
+場合は `contextName` のソース名で対象を選びます。
 
 電源をトグルではなく **ON/OFF どちらかに確定**させたい場合や、電界強度などの
 パラメータを動かしたい場合は `SetSourceFilterSettings` を使います
@@ -362,8 +362,9 @@ video and audio entries to fire picture and sound together. A Stream Deck (or si
 can drive them with its stock "Hotkey" action — OBS hotkeys work while unfocused.
 
 Over obs-websocket 5.x, trigger them by name with `TriggerHotkeyByName`, passing the
-internal name as `hotkeyName` and the **filter's name** (default "Composite TV") as
-`contextName` (needs obs-websocket 5.4 / OBS 30.2+). To set power to a definite state
+internal name as `hotkeyName` and the **name of the source the filter is attached to**
+(the scene name when filtering a scene) as `contextName` (needs obs-websocket 5.4 /
+OBS 30.2+). To set power to a definite state
 instead of toggling — or to drive any parameter such as `field_strength` — use
 `SetSourceFilterSettings` with the parent source's name, e.g.
 `"filterSettings": { "power": false }`. Writing a fresh integer to `glitch_pulse` /

@@ -447,19 +447,53 @@ static void ntsc_power_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey
 	obs_data_release(s);
 }
 
+/* The hotkey settings UI only lists sources it shows elsewhere (scenes and
+ * regular sources), never the filter's own private source, so the hotkeys
+ * must be registered on the parent the filter is attached to. */
+static void ntsc_filter_add(void *data, obs_source_t *parent)
+{
+	struct composite_tv *f = data;
+	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
+		return;
+	f->glitch_hotkey = obs_hotkey_register_source(parent, "composite_tv.glitch",
+						      obs_module_text("CompositeTV.Hotkey.Glitch"),
+						      ntsc_glitch_hotkey, f);
+	f->degauss_hotkey = obs_hotkey_register_source(parent, "composite_tv.degauss",
+						       obs_module_text("CompositeTV.Hotkey.Degauss"),
+						       ntsc_degauss_hotkey, f);
+	f->power_hotkey = obs_hotkey_register_source(parent, "composite_tv.power",
+						     obs_module_text("CompositeTV.Hotkey.Power"),
+						     ntsc_power_hotkey, f);
+}
+
+static void ntsc_unregister_hotkeys(struct composite_tv *f)
+{
+	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->glitch_hotkey);
+	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->degauss_hotkey);
+	if (f->power_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->power_hotkey);
+	f->glitch_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->degauss_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->power_hotkey = OBS_INVALID_HOTKEY_ID;
+}
+
+static void ntsc_filter_remove(void *data, obs_source_t *parent)
+{
+	UNUSED_PARAMETER(parent);
+	ntsc_unregister_hotkeys(data);
+}
+
 static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 {
 	struct composite_tv *f = bzalloc(sizeof(struct composite_tv));
 	f->source = source;
-	f->glitch_hotkey = obs_hotkey_register_source(source, "composite_tv.glitch",
-						      obs_module_text("CompositeTV.Hotkey.Glitch"),
-						      ntsc_glitch_hotkey, f);
-	f->degauss_hotkey = obs_hotkey_register_source(source, "composite_tv.degauss",
-						       obs_module_text("CompositeTV.Hotkey.Degauss"),
-						       ntsc_degauss_hotkey, f);
-	f->power_hotkey = obs_hotkey_register_source(source, "composite_tv.power",
-						     obs_module_text("CompositeTV.Hotkey.Power"),
-						     ntsc_power_hotkey, f);
+	/* Registered on the parent in ntsc_filter_add; 0 is a valid hotkey id,
+	 * so the zeroed struct must not be left as-is. */
+	f->glitch_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->degauss_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->power_hotkey = OBS_INVALID_HOTKEY_ID;
 
 	char *path = obs_module_file("effects/composite-tv.effect");
 	obs_enter_graphics();
@@ -494,12 +528,7 @@ static void free_texrender(gs_texrender_t **tr)
 static void ntsc_destroy(void *data)
 {
 	struct composite_tv *f = data;
-	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
-		obs_hotkey_unregister(f->glitch_hotkey);
-	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
-		obs_hotkey_unregister(f->degauss_hotkey);
-	if (f->power_hotkey != OBS_INVALID_HOTKEY_ID)
-		obs_hotkey_unregister(f->power_hotkey);
+	ntsc_unregister_hotkeys(f);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);
@@ -1015,4 +1044,6 @@ struct obs_source_info composite_tv_filter_info = {
 	.video_render = ntsc_render,
 	.get_properties = ntsc_get_properties,
 	.get_defaults = ntsc_defaults,
+	.filter_add = ntsc_filter_add,
+	.filter_remove = ntsc_filter_remove,
 };
