@@ -38,7 +38,7 @@
     },
     "name": "composite-tv",
     "displayName": "Composite TV",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "author": "abanum",
     "website": "https://github.com/abanum/composite-tv",
     "email": "abanum@users.noreply.github.com"

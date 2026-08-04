@@ -5,10 +5,10 @@
 ;   data\*        -> <OBS>\data\obs-plugins\composite-tv\
 ;
 ; Build with:  installer\build-installer.ps1   (passes /DAppVersion from buildspec.json)
-; or manually: ISCC /DAppVersion=1.0.1 installer\composite-tv.iss
+; or manually: ISCC /DAppVersion=1.0.2 installer\composite-tv.iss
 
 #ifndef AppVersion
-  #define AppVersion "1.0.1"
+  #define AppVersion "1.0.2"
 #endif
 
 #define AppName "Composite TV (OBS plugin)"
