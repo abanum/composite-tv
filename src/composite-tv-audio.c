@@ -23,6 +23,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "composite-tv-audio.h"
+#include "composite-tv-props.h"
 
 #include <obs-module.h>
 #include <math.h>
@@ -301,25 +302,33 @@ static struct obs_audio_data *na_filter_audio(void *data, struct obs_audio_data 
 
 /* ---- properties ------------------------------------------------------ */
 
+/* Shared by na_defaults() and the "Default: x" tooltips below, so the hover
+ * text cannot drift from what the Defaults button restores. */
+#define DEF_POWER true
+#define DEF_FIELD_STRENGTH 1.0
+#define DEF_VOLUME 0.35
+#define DEF_INTERCARRIER 0.0
+
 static obs_properties_t *na_get_properties(void *data)
 {
 	UNUSED_PARAMETER(data);
 	obs_properties_t *p = obs_properties_create();
 	obs_properties_add_text(p, "hint", obs_module_text("CompositeTV.Hint"), OBS_TEXT_INFO);
-	obs_properties_add_bool(p, "power", obs_module_text("CompositeTV.Power"));
-	obs_properties_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0,
-					0.01);
-	obs_properties_add_float_slider(p, "volume", obs_module_text("CompositeTV.Volume"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "intercarrier", obs_module_text("CompositeTV.Intercarrier"), 0.0, 0.25, 0.01);
+	ctv_add_bool(p, "power", obs_module_text("CompositeTV.Power"), DEF_POWER);
+	ctv_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0, 0.01,
+			     DEF_FIELD_STRENGTH);
+	ctv_add_float_slider(p, "volume", obs_module_text("CompositeTV.Volume"), 0.0, 1.0, 0.01, DEF_VOLUME);
+	ctv_add_float_slider(p, "intercarrier", obs_module_text("CompositeTV.Intercarrier"), 0.0, 0.25, 0.01,
+			     DEF_INTERCARRIER);
 	return p;
 }
 
 static void na_defaults(obs_data_t *s)
 {
-	obs_data_set_default_bool(s, "power", true);
-	obs_data_set_default_double(s, "field_strength", 1.0);
-	obs_data_set_default_double(s, "volume", 0.35);
-	obs_data_set_default_double(s, "intercarrier", 0.0);
+	obs_data_set_default_bool(s, "power", DEF_POWER);
+	obs_data_set_default_double(s, "field_strength", DEF_FIELD_STRENGTH);
+	obs_data_set_default_double(s, "volume", DEF_VOLUME);
+	obs_data_set_default_double(s, "intercarrier", DEF_INTERCARRIER);
 }
 
 struct obs_source_info composite_tv_audio_filter_info = {

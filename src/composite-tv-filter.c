@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "composite-tv-filter.h"
+#include "composite-tv-props.h"
 
 #include <obs-module.h>
 #include <graphics/graphics.h>
@@ -872,6 +873,60 @@ static void ntsc_props_destroyed(void *param)
 	obs_weak_source_release(weak);
 }
 
+/* Every default lives here exactly once: ntsc_defaults() sets them and
+ * ntsc_get_properties() prints them into the "Default: x" tooltips, so the two
+ * cannot disagree. */
+#define DEF_POWER true
+#define DEF_FIELD_STRENGTH 1.00
+#define DEF_NOISE_FLOOR 0.04
+#define DEF_YC_MODE 1
+#define DEF_CHROMA_BAND_I 1.3
+#define DEF_CHROMA_BAND_Q 0.4
+#define DEF_ENC_CHROMA_GAIN 1.0
+#define DEF_SCREEN_ASPECT 0
+#define DEF_ASPECT_MODE 0
+#define DEF_AGC_LEVEL 0.62
+#define DEF_AGC_JITTER 0.06
+#define DEF_IF_BANDWIDTH 5.0
+#define DEF_LUMA_BANDWIDTH 4.2
+#define DEF_CHROMA_GAIN 0.70
+#define DEF_COLOR_KILLER false
+#define DEF_CHROMA_DRIFT 0.6
+#define DEF_CONTRAST 1.15
+#define DEF_BRIGHTNESS -0.02
+#define DEF_SCAN_LINES ACTIVE_LINES
+#define DEF_LINE_SKIP false
+#define DEF_GAP_LEVEL 0.15
+#define DEF_INTERLACE true
+#define DEF_PERSISTENCE 0.22
+#define DEF_SPOT_V 0.45
+#define DEF_SPOT_H 0.85
+#define DEF_SCANLINE 0.35
+#define DEF_PREVIEW_ZOOM 1.0
+#define DEF_ZOOM_X 0.5
+#define DEF_ZOOM_Y 0.5
+#define DEF_MASK_TYPE 0
+#define DEF_MASK_STRENGTH 0.6
+#define DEF_MASK_WIDTH 0.62
+#define DEF_MASK_PITCH 450.0
+#define DEF_WIRE_WIDTH 0.01
+#define DEF_CURVATURE 0.025
+#define DEF_VIGNETTE 0.30
+#define DEF_OVERSCAN 0.0
+#define DEF_DEGAUSS_LEN 1.2
+#define DEF_DEGAUSS_STRENGTH 0.7
+#define DEF_GLITCH_ENABLE false
+#define DEF_GHOST_GAIN 0.0
+#define DEF_GHOST_DELAY 24.0
+#define DEF_V_ROLL_SPEED 0.0
+#define DEF_H_JITTER 0.0
+#define DEF_FLAGGING 0.0
+#define DEF_HEAD_SWITCH 0.0
+#define DEF_DROPOUT 0.0
+#define DEF_BEAT_GAIN 0.0
+#define DEF_BEAT_FREQ 2.5
+#define DEF_BURST_LEN 0.4
+
 static obs_properties_t *ntsc_get_properties(void *data)
 {
 	struct composite_tv *f = data;
@@ -881,66 +936,81 @@ static obs_properties_t *ntsc_get_properties(void *data)
 		obs_properties_set_param(p, obs_source_get_weak_source(f->source), ntsc_props_destroyed);
 
 	obs_properties_add_text(p, "hint", obs_module_text("CompositeTV.Hint"), OBS_TEXT_INFO);
-	obs_properties_add_bool(p, "power", obs_module_text("CompositeTV.Power"));
-	obs_properties_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0,
-					0.01);
-	obs_properties_add_float_slider(p, "noise_floor", obs_module_text("CompositeTV.NoiseFloor"), 0.0, 0.30, 0.01);
+	ctv_add_bool(p, "power", obs_module_text("CompositeTV.Power"), DEF_POWER);
+	ctv_add_float_slider(p, "field_strength", obs_module_text("CompositeTV.FieldStrength"), 0.0, 1.0, 0.01,
+			     DEF_FIELD_STRENGTH);
+	ctv_add_float_slider(p, "noise_floor", obs_module_text("CompositeTV.NoiseFloor"), 0.0, 0.30, 0.01,
+			     DEF_NOISE_FLOOR);
 
 	obs_property_t *yc = obs_properties_add_list(p, "yc_mode", obs_module_text("CompositeTV.YCMode"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Bandpass"), 0);
 	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Comb2"), 1);
 	obs_property_list_add_int(yc, obs_module_text("CompositeTV.YCMode.Comb3"), 2);
+	ctv_set_list_default_tip(yc, DEF_YC_MODE);
 
-	obs_properties_add_float_slider(p, "chroma_band_i", obs_module_text("CompositeTV.ChromaBandI"), 0.4, 2.0, 0.1);
-	obs_properties_add_float_slider(p, "chroma_band_q", obs_module_text("CompositeTV.ChromaBandQ"), 0.2, 1.3, 0.1);
-	obs_properties_add_float_slider(p, "enc_chroma_gain", obs_module_text("CompositeTV.EncChromaGain"), 0.0, 1.5,
-					0.05);
+	ctv_add_float_slider(p, "chroma_band_i", obs_module_text("CompositeTV.ChromaBandI"), 0.4, 2.0, 0.1,
+			     DEF_CHROMA_BAND_I);
+	ctv_add_float_slider(p, "chroma_band_q", obs_module_text("CompositeTV.ChromaBandQ"), 0.2, 1.3, 0.1,
+			     DEF_CHROMA_BAND_Q);
+	ctv_add_float_slider(p, "enc_chroma_gain", obs_module_text("CompositeTV.EncChromaGain"), 0.0, 1.5, 0.05,
+			     DEF_ENC_CHROMA_GAIN);
 
 	obs_property_t *scr = obs_properties_add_list(p, "screen_aspect", obs_module_text("CompositeTV.ScreenAspect"),
 						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.Source"), 0);
 	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.43"), 1);
 	obs_property_list_add_int(scr, obs_module_text("CompositeTV.ScreenAspect.169"), 2);
+	ctv_set_list_default_tip(scr, DEF_SCREEN_ASPECT);
 
 	obs_property_t *asp = obs_properties_add_list(p, "aspect_mode", obs_module_text("CompositeTV.AspectMode"),
 						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(asp, obs_module_text("CompositeTV.AspectMode.Letterbox"), 0);
 	obs_property_list_add_int(asp, obs_module_text("CompositeTV.AspectMode.Stretch"), 1);
+	ctv_set_list_default_tip(asp, DEF_ASPECT_MODE);
 
-	obs_properties_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01);
-	obs_properties_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01);
-	obs_properties_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1);
+	ctv_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01, DEF_AGC_LEVEL);
+	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
+			     DEF_AGC_JITTER);
+	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
+			     DEF_IF_BANDWIDTH);
 
-	obs_properties_add_float_slider(p, "luma_bandwidth", obs_module_text("CompositeTV.LumaBandwidth"), 1.0, 4.2, 0.1);
-	obs_properties_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01);
-	obs_properties_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"));
-	obs_properties_add_float_slider(p, "chroma_drift", obs_module_text("CompositeTV.ChromaDrift"), 0.0, 3.0, 0.05);
-	obs_properties_add_float_slider(p, "contrast", obs_module_text("CompositeTV.Contrast"), 0.3, 2.0, 0.01);
-	obs_properties_add_float_slider(p, "brightness", obs_module_text("CompositeTV.Brightness"), -0.3, 0.3, 0.01);
+	ctv_add_float_slider(p, "luma_bandwidth", obs_module_text("CompositeTV.LumaBandwidth"), 1.0, 4.2, 0.1,
+			     DEF_LUMA_BANDWIDTH);
+	ctv_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01,
+			     DEF_CHROMA_GAIN);
+	ctv_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"), DEF_COLOR_KILLER);
+	ctv_add_float_slider(p, "chroma_drift", obs_module_text("CompositeTV.ChromaDrift"), 0.0, 3.0, 0.05,
+			     DEF_CHROMA_DRIFT);
+	ctv_add_float_slider(p, "contrast", obs_module_text("CompositeTV.Contrast"), 0.3, 2.0, 0.01, DEF_CONTRAST);
+	ctv_add_float_slider(p, "brightness", obs_module_text("CompositeTV.Brightness"), -0.3, 0.3, 0.01,
+			     DEF_BRIGHTNESS);
 
 	obs_property_t *sl = obs_properties_add_list(p, "scan_lines", obs_module_text("CompositeTV.ScanLines"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.486"), 486);
 	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.243"), 243);
 	obs_property_list_add_int(sl, obs_module_text("CompositeTV.ScanLines.162"), 162);
+	ctv_set_list_default_tip(sl, DEF_SCAN_LINES);
 
-	obs_properties_add_bool(p, "line_skip", obs_module_text("CompositeTV.LineSkip"));
-	obs_properties_add_float_slider(p, "gap_level", obs_module_text("CompositeTV.GapLevel"), 0.0, 1.0, 0.05);
+	ctv_add_bool(p, "line_skip", obs_module_text("CompositeTV.LineSkip"), DEF_LINE_SKIP);
+	ctv_add_float_slider(p, "gap_level", obs_module_text("CompositeTV.GapLevel"), 0.0, 1.0, 0.05, DEF_GAP_LEVEL);
 
-	obs_properties_add_bool(p, "interlace", obs_module_text("CompositeTV.Interlace"));
-	obs_properties_add_float_slider(p, "persistence", obs_module_text("CompositeTV.Persistence"), 0.0, 0.75, 0.01);
-	obs_properties_add_float_slider(p, "spot_v", obs_module_text("CompositeTV.SpotV"), 0.30, 1.60, 0.01);
-	obs_properties_add_float_slider(p, "spot_h", obs_module_text("CompositeTV.SpotH"), 0.30, 2.50, 0.01);
-	obs_properties_add_float_slider(p, "scanline", obs_module_text("CompositeTV.Scanline"), 0.0, 0.60, 0.01);
+	ctv_add_bool(p, "interlace", obs_module_text("CompositeTV.Interlace"), DEF_INTERLACE);
+	ctv_add_float_slider(p, "persistence", obs_module_text("CompositeTV.Persistence"), 0.0, 0.75, 0.01,
+			     DEF_PERSISTENCE);
+	ctv_add_float_slider(p, "spot_v", obs_module_text("CompositeTV.SpotV"), 0.30, 1.60, 0.01, DEF_SPOT_V);
+	ctv_add_float_slider(p, "spot_h", obs_module_text("CompositeTV.SpotH"), 0.30, 2.50, 0.01, DEF_SPOT_H);
+	ctv_add_float_slider(p, "scanline", obs_module_text("CompositeTV.Scanline"), 0.0, 0.60, 0.01, DEF_SCANLINE);
 
 	/* Inspection aid, kept next to the controls it exists to make judgeable.
 	 * It magnifies the output, so it winds back to 1.0 when the dialog is
 	 * closed - the hint below says so. */
-	obs_properties_add_float_slider(p, "preview_zoom", obs_module_text("CompositeTV.PreviewZoom"), 1.0, 8.0, 0.1);
+	ctv_add_float_slider(p, "preview_zoom", obs_module_text("CompositeTV.PreviewZoom"), 1.0, 8.0, 0.1,
+			     DEF_PREVIEW_ZOOM);
 	obs_properties_add_text(p, "zoom_hint", obs_module_text("CompositeTV.ZoomHint"), OBS_TEXT_INFO);
-	obs_properties_add_float_slider(p, "zoom_x", obs_module_text("CompositeTV.ZoomX"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "zoom_y", obs_module_text("CompositeTV.ZoomY"), 0.0, 1.0, 0.01);
+	ctv_add_float_slider(p, "zoom_x", obs_module_text("CompositeTV.ZoomX"), 0.0, 1.0, 0.01, DEF_ZOOM_X);
+	ctv_add_float_slider(p, "zoom_y", obs_module_text("CompositeTV.ZoomY"), 0.0, 1.0, 0.01, DEF_ZOOM_Y);
 
 	/* tube-face colour structure */
 	obs_property_t *mt = obs_properties_add_list(p, "mask_type", obs_module_text("CompositeTV.MaskType"),
@@ -949,30 +1019,39 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Slot"), 1);
 	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Dot"), 2);
 	obs_property_list_add_int(mt, obs_module_text("CompositeTV.MaskType.Grille"), 3);
-	obs_properties_add_float_slider(p, "mask_strength", obs_module_text("CompositeTV.MaskStrength"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(p, "mask_width", obs_module_text("CompositeTV.MaskWidth"), 0.20, 1.00, 0.01);
-	obs_properties_add_float_slider(p, "mask_pitch", obs_module_text("CompositeTV.MaskPitch"), 150.0, 900.0, 10.0);
-	obs_properties_add_float_slider(p, "wire_width", obs_module_text("CompositeTV.WireWidth"), 0.01, 4.0, 0.01);
+	ctv_set_list_default_tip(mt, DEF_MASK_TYPE);
+	ctv_add_float_slider(p, "mask_strength", obs_module_text("CompositeTV.MaskStrength"), 0.0, 1.0, 0.01,
+			     DEF_MASK_STRENGTH);
+	ctv_add_float_slider(p, "mask_width", obs_module_text("CompositeTV.MaskWidth"), 0.20, 1.00, 0.01,
+			     DEF_MASK_WIDTH);
+	ctv_add_float_slider(p, "mask_pitch", obs_module_text("CompositeTV.MaskPitch"), 150.0, 900.0, 10.0,
+			     DEF_MASK_PITCH);
+	ctv_add_float_slider(p, "wire_width", obs_module_text("CompositeTV.WireWidth"), 0.01, 4.0, 0.01,
+			     DEF_WIRE_WIDTH);
 
-	obs_properties_add_float_slider(p, "curvature", obs_module_text("CompositeTV.Curvature"), 0.0, 0.12, 0.005);
-	obs_properties_add_float_slider(p, "vignette", obs_module_text("CompositeTV.Vignette"), 0.0, 0.80, 0.01);
-	obs_properties_add_float_slider(p, "overscan", obs_module_text("CompositeTV.Overscan"), 0.0, 0.08, 0.005);
-	obs_properties_add_float_slider(p, "degauss_len", obs_module_text("CompositeTV.DegaussLen"), 0.3, 3.0, 0.1);
-	obs_properties_add_float_slider(p, "degauss_strength", obs_module_text("CompositeTV.DegaussStrength"), 0.0, 1.0,
-					0.01);
+	ctv_add_float_slider(p, "curvature", obs_module_text("CompositeTV.Curvature"), 0.0, 0.12, 0.005, DEF_CURVATURE);
+	ctv_add_float_slider(p, "vignette", obs_module_text("CompositeTV.Vignette"), 0.0, 0.80, 0.01, DEF_VIGNETTE);
+	ctv_add_float_slider(p, "overscan", obs_module_text("CompositeTV.Overscan"), 0.0, 0.08, 0.005, DEF_OVERSCAN);
+	ctv_add_float_slider(p, "degauss_len", obs_module_text("CompositeTV.DegaussLen"), 0.3, 3.0, 0.1,
+			     DEF_DEGAUSS_LEN);
+	ctv_add_float_slider(p, "degauss_strength", obs_module_text("CompositeTV.DegaussStrength"), 0.0, 1.0, 0.01,
+			     DEF_DEGAUSS_STRENGTH);
 
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
-	obs_properties_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01);
-	obs_properties_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0);
-	obs_properties_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01);
-	obs_properties_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01);
-	obs_properties_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01);
-	obs_properties_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01);
-	obs_properties_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05);
+	ctv_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01, DEF_GHOST_GAIN);
+	ctv_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0,
+			     DEF_GHOST_DELAY);
+	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
+			     DEF_V_ROLL_SPEED);
+	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
+	ctv_add_float_slider(g, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
+			     DEF_HEAD_SWITCH);
+	ctv_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
+	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
+	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
+	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
 	obs_properties_add_group(p, "glitch_enable", obs_module_text("CompositeTV.Glitch"), OBS_GROUP_CHECKABLE, g);
 
 	return p;
@@ -980,57 +1059,57 @@ static obs_properties_t *ntsc_get_properties(void *data)
 
 static void ntsc_defaults(obs_data_t *s)
 {
-	obs_data_set_default_bool(s, "power", true);
-	obs_data_set_default_double(s, "field_strength", 1.00);
-	obs_data_set_default_double(s, "noise_floor", 0.04);
-	obs_data_set_default_int(s, "yc_mode", 1);
-	obs_data_set_default_double(s, "chroma_band_i", 1.3);
-	obs_data_set_default_double(s, "chroma_band_q", 0.4);
-	obs_data_set_default_double(s, "enc_chroma_gain", 1.0);
-	obs_data_set_default_int(s, "aspect_mode", 0);
-	obs_data_set_default_int(s, "screen_aspect", 0);
-	obs_data_set_default_double(s, "agc_level", 0.62);
-	obs_data_set_default_double(s, "agc_jitter", 0.06);
-	obs_data_set_default_double(s, "if_bandwidth", 5.0);
-	obs_data_set_default_double(s, "luma_bandwidth", 4.2);
-	obs_data_set_default_double(s, "chroma_gain", 0.70);
-	obs_data_set_default_bool(s, "color_killer", false);
-	obs_data_set_default_double(s, "chroma_drift", 0.6);
-	obs_data_set_default_double(s, "contrast", 1.15);
-	obs_data_set_default_double(s, "brightness", -0.02);
-	obs_data_set_default_int(s, "scan_lines", ACTIVE_LINES);
-	obs_data_set_default_bool(s, "line_skip", false);
-	obs_data_set_default_double(s, "gap_level", 0.15);
-	obs_data_set_default_bool(s, "interlace", true);
-	obs_data_set_default_double(s, "persistence", 0.22);
-	obs_data_set_default_double(s, "spot_v", 0.45);
-	obs_data_set_default_double(s, "spot_h", 0.85);
-	obs_data_set_default_double(s, "scanline", 0.35);
-	obs_data_set_default_double(s, "curvature", 0.025);
-	obs_data_set_default_double(s, "vignette", 0.30);
-	obs_data_set_default_double(s, "overscan", 0.0);
-	obs_data_set_default_double(s, "degauss_len", 1.2);
-	obs_data_set_default_double(s, "degauss_strength", 0.7);
-	obs_data_set_default_double(s, "preview_zoom", 1.0);
-	obs_data_set_default_double(s, "zoom_x", 0.5);
-	obs_data_set_default_double(s, "zoom_y", 0.5);
-	obs_data_set_default_int(s, "mask_type", 0);
-	obs_data_set_default_double(s, "mask_strength", 0.6);
-	obs_data_set_default_double(s, "mask_width", 0.62);
-	obs_data_set_default_double(s, "mask_pitch", 450.0);
-	obs_data_set_default_double(s, "wire_width", 0.01);
+	obs_data_set_default_bool(s, "power", DEF_POWER);
+	obs_data_set_default_double(s, "field_strength", DEF_FIELD_STRENGTH);
+	obs_data_set_default_double(s, "noise_floor", DEF_NOISE_FLOOR);
+	obs_data_set_default_int(s, "yc_mode", DEF_YC_MODE);
+	obs_data_set_default_double(s, "chroma_band_i", DEF_CHROMA_BAND_I);
+	obs_data_set_default_double(s, "chroma_band_q", DEF_CHROMA_BAND_Q);
+	obs_data_set_default_double(s, "enc_chroma_gain", DEF_ENC_CHROMA_GAIN);
+	obs_data_set_default_int(s, "aspect_mode", DEF_ASPECT_MODE);
+	obs_data_set_default_int(s, "screen_aspect", DEF_SCREEN_ASPECT);
+	obs_data_set_default_double(s, "agc_level", DEF_AGC_LEVEL);
+	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
+	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
+	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
+	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
+	obs_data_set_default_bool(s, "color_killer", DEF_COLOR_KILLER);
+	obs_data_set_default_double(s, "chroma_drift", DEF_CHROMA_DRIFT);
+	obs_data_set_default_double(s, "contrast", DEF_CONTRAST);
+	obs_data_set_default_double(s, "brightness", DEF_BRIGHTNESS);
+	obs_data_set_default_int(s, "scan_lines", DEF_SCAN_LINES);
+	obs_data_set_default_bool(s, "line_skip", DEF_LINE_SKIP);
+	obs_data_set_default_double(s, "gap_level", DEF_GAP_LEVEL);
+	obs_data_set_default_bool(s, "interlace", DEF_INTERLACE);
+	obs_data_set_default_double(s, "persistence", DEF_PERSISTENCE);
+	obs_data_set_default_double(s, "spot_v", DEF_SPOT_V);
+	obs_data_set_default_double(s, "spot_h", DEF_SPOT_H);
+	obs_data_set_default_double(s, "scanline", DEF_SCANLINE);
+	obs_data_set_default_double(s, "curvature", DEF_CURVATURE);
+	obs_data_set_default_double(s, "vignette", DEF_VIGNETTE);
+	obs_data_set_default_double(s, "overscan", DEF_OVERSCAN);
+	obs_data_set_default_double(s, "degauss_len", DEF_DEGAUSS_LEN);
+	obs_data_set_default_double(s, "degauss_strength", DEF_DEGAUSS_STRENGTH);
+	obs_data_set_default_double(s, "preview_zoom", DEF_PREVIEW_ZOOM);
+	obs_data_set_default_double(s, "zoom_x", DEF_ZOOM_X);
+	obs_data_set_default_double(s, "zoom_y", DEF_ZOOM_Y);
+	obs_data_set_default_int(s, "mask_type", DEF_MASK_TYPE);
+	obs_data_set_default_double(s, "mask_strength", DEF_MASK_STRENGTH);
+	obs_data_set_default_double(s, "mask_width", DEF_MASK_WIDTH);
+	obs_data_set_default_double(s, "mask_pitch", DEF_MASK_PITCH);
+	obs_data_set_default_double(s, "wire_width", DEF_WIRE_WIDTH);
 
-	obs_data_set_default_bool(s, "glitch_enable", false);
-	obs_data_set_default_double(s, "ghost_gain", 0.0);
-	obs_data_set_default_double(s, "ghost_delay", 24.0);
-	obs_data_set_default_double(s, "v_roll_speed", 0.0);
-	obs_data_set_default_double(s, "h_jitter", 0.0);
-	obs_data_set_default_double(s, "flagging", 0.0);
-	obs_data_set_default_double(s, "head_switch", 0.0);
-	obs_data_set_default_double(s, "dropout", 0.0);
-	obs_data_set_default_double(s, "beat_gain", 0.0);
-	obs_data_set_default_double(s, "beat_freq", 2.5);
-	obs_data_set_default_double(s, "burst_len", 0.4);
+	obs_data_set_default_bool(s, "glitch_enable", DEF_GLITCH_ENABLE);
+	obs_data_set_default_double(s, "ghost_gain", DEF_GHOST_GAIN);
+	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
+	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
+	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
+	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
+	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
+	obs_data_set_default_double(s, "dropout", DEF_DROPOUT);
+	obs_data_set_default_double(s, "beat_gain", DEF_BEAT_GAIN);
+	obs_data_set_default_double(s, "beat_freq", DEF_BEAT_FREQ);
+	obs_data_set_default_double(s, "burst_len", DEF_BURST_LEN);
 }
 
 struct obs_source_info composite_tv_filter_info = {
