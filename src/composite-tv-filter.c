@@ -44,6 +44,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* Settings are in MHz; the shader wants cutoffs normalised to the sample rate. */
 #define MHZ_TO_NORM (1.0e6 / SAMPLE_RATE_HZ)
 
+/* Tape dropout, from published VHS measurements. Nothing shorter than about
+ * 0.5us can happen - the tape signal cannot fall away faster than that - and
+ * the count falls off logarithmically as they get longer, so the short ones
+ * dominate and the 300us ones are rare. A permanent defect (a crease or a
+ * scratch) is longer still and always in the same place. */
+#define ACTIVE_LINE_US 52.7 /* active picture time of one NTSC line */
+#define DROPOUT_MIN_US 0.5
+#define DROPOUT_MAX_US 200.0
+#define DROPOUT_PERM_US 180.0
+
 /* Power on/off envelope (seconds), ported from the reference PowerEnvelope. */
 #define WARMUP_SEC 1.5f
 #define COLLAPSE_V_SEC 0.13f
@@ -712,7 +722,28 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
-	set_f(e, "dropout", clampf(f->dropout + b * 0.6f, 0.0f, 2.0f));
+	/* Dropout. The slider is a rate, and the shader wants a per-line chance
+	 * of one starting plus the length distribution, both of which depend on
+	 * how long a drawn line lasts. */
+	const float dop = clampf(f->dropout + b * 0.6f, 0.0f, 1.6f);
+	const float line_us = (float)(ACTIVE_LINE_US * (double)ACTIVE_LINES / (double)f->scan_lines);
+	float prob = 0.0f;
+	float perm = 0.0f;
+	if (dop > 0.0f) {
+		/* The bottom of the slider sits on the measured ten dropouts a
+		 * minute of a good tape and a few hundred for a ruined one; the
+		 * top runs well past both, because a faithful maximum would be
+		 * far too quiet to work as a glitch control. */
+		prob = fminf(0.0018f * expf(9.3f * dop) / (float)f->scan_lines, 0.25f);
+		/* Creases and scratches are rare and permanent, so they only turn
+		 * up once the tape is meant to be in poor condition. */
+		perm = 0.004f * fmaxf(dop - 0.3f, 0.0f);
+	}
+	set_f(e, "dropout_prob", prob);
+	set_f(e, "dropout_perm", perm);
+	set_f(e, "dropout_min", (float)DROPOUT_MIN_US / line_us);
+	set_f(e, "dropout_span", (float)log(DROPOUT_MAX_US / DROPOUT_MIN_US));
+	set_f(e, "dropout_long", (float)DROPOUT_PERM_US / line_us);
 	set_f(e, "dropout_doc", f->dropout_doc ? 1.0f : 0.0f);
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
