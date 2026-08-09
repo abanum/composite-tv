@@ -109,6 +109,7 @@ uniform float h_jitter;           // per-line horizontal jitter
 uniform float flagging;           // top-of-picture horizontal bend
 uniform float head_switch;        // VHS head-switching tear at the bottom
 uniform float dropout;            // tape dropout streaks
+uniform float dropout_doc;        // 1: dropout compensator repeats the last good line
 
 // Degauss (demagnetising coil): a decaying AC field warps the beam and
 // briefly ruins purity. All zero = inactive, which is the normal path.
@@ -730,6 +731,56 @@ float4 PSDisplay(VertData v) : TARGET
 	}
 	col /= max(wsum, 1.0e-5);
 
+	// Tape dropout: the head momentarily loses RF from the tape. Drawn before
+	// the scan-line and mask structure below, because it is a hole in the
+	// signal the beam paints - not a mark on the glass.
+	if (dropout > 0.0) {
+		// The defect is a physical mark on the tape, so it outlives one
+		// field and is wider than one line: every hit opens a block of one
+		// to three lines, and the pattern only changes every fourth field.
+		float dseed = floor((float)field_seed * 0.25);
+		float li = floor(lineF);
+		float hit = 0.0;
+		float top = 0.0;
+		float x0 = 0.0;
+		float x1 = 0.0;
+		for (int k = 0; k < 3; ++k) {
+			float l0 = li - (float)k;
+			float height = 1.0 + floor(hash13(float3(l0, dseed, 19.0)) * 3.0);
+			if (hit < 0.5 && (float)k < height && hash13(float3(l0, dseed, 11.0)) < dropout * 0.03) {
+				top = l0;
+				x0 = hash13(float3(l0, dseed, 13.0)) * 0.9;
+				x1 = x0 + 0.05 + hash13(float3(l0, dseed, 17.0)) * 0.25;
+				hit = 1.0;
+			}
+		}
+
+		if (hit > 0.5 && uv.x > x0 && uv.x < x1) {
+			if (dropout_doc > 0.5) {
+				// Dropout compensator: a 1H delay line recirculates the
+				// last good line, so the whole block repeats it. Colour
+				// survives - the delay carries the signal, not just luma.
+				int src = (int)top - 1;
+				if (src >= 0)
+					col = sampleLine(src, uv.x);
+				else
+					col = float3(0.0, 0.0, 0.0);
+			} else {
+				// Uncompensated: with the luma FM carrier gone the
+				// demodulator has nothing to lock to and rails past peak
+				// white. Nothing of the picture is left underneath.
+				col = float3(1.08, 1.08, 1.08);
+			}
+		} else if (hit > 0.5 && dropout_doc < 0.5 && uv.x >= x1) {
+			// The chroma carrier dropped out with it and the colour killer
+			// takes a moment to come back, so the line runs monochrome out
+			// of the streak.
+			float fade = saturate(1.0 - (uv.x - x1) * 5.5);
+			float lum = dot(col, float3(0.299, 0.587, 0.114));
+			col = lerp(col, float3(lum, lum, lum), fade);
+		}
+	}
+
 	// Scan-line structure can only be drawn when a line spans enough output
 	// pixels; below that it would only alias, so the soft ramp and the hard
 	// line skip fade out together.
@@ -743,17 +794,6 @@ float4 PSDisplay(VertData v) : TARGET
 	if (line_skip > 0.5) {
 		float inGap = (abs(phase - 0.5) < 0.25) ? 1.0 : 0.0;
 		col *= lerp(1.0, gap_level, inGap * lineVisible);
-	}
-
-	// Tape dropout: short bright streaks on random lines.
-	if (dropout > 0.0) {
-		float li = floor(lineF);
-		if (hash13(float3(li, (float)field_seed, 11.0)) < dropout * 0.05) {
-			float start = hash13(float3(li, (float)field_seed, 13.0)) * 0.9;
-			float len = 0.05 + hash13(float3(li, (float)field_seed, 17.0)) * 0.25;
-			if (uv.x > start && uv.x < start + len)
-				col = lerp(col, float3(0.92, 0.92, 0.92), 0.85);
-		}
 	}
 
 	// Blanking bar riding the roll seam: dark, with a little residual noise.

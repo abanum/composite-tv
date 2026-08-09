@@ -124,6 +124,7 @@ struct composite_tv {
 	float flagging;
 	float head_switch;
 	float dropout;
+	bool dropout_doc;
 	float beat_gain;
 	float beat_norm;
 	float burst_len;
@@ -375,6 +376,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
 	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
 	f->dropout = glitch ? (float)obs_data_get_double(s, "dropout") : 0.0f;
+	f->dropout_doc = obs_data_get_bool(s, "dropout_doc");
 	f->beat_gain = glitch ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
@@ -711,6 +713,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
 	set_f(e, "dropout", clampf(f->dropout + b * 0.6f, 0.0f, 2.0f));
+	set_f(e, "dropout_doc", f->dropout_doc ? 1.0f : 0.0f);
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;
@@ -923,6 +926,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_FLAGGING 0.0
 #define DEF_HEAD_SWITCH 0.0
 #define DEF_DROPOUT 0.0
+#define DEF_DROPOUT_DOC false
 #define DEF_BEAT_GAIN 0.0
 #define DEF_BEAT_FREQ 2.5
 #define DEF_BURST_LEN 0.4
@@ -1049,6 +1053,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
 			     DEF_HEAD_SWITCH);
 	ctv_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
+	ctv_add_bool(g, "dropout_doc", obs_module_text("CompositeTV.DropoutDoc"), DEF_DROPOUT_DOC);
 	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
 	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
@@ -1107,6 +1112,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
 	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
 	obs_data_set_default_double(s, "dropout", DEF_DROPOUT);
+	obs_data_set_default_bool(s, "dropout_doc", DEF_DROPOUT_DOC);
 	obs_data_set_default_double(s, "beat_gain", DEF_BEAT_GAIN);
 	obs_data_set_default_double(s, "beat_freq", DEF_BEAT_FREQ);
 	obs_data_set_default_double(s, "burst_len", DEF_BURST_LEN);
