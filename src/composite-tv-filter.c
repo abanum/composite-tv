@@ -47,12 +47,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* Tape dropout, from published VHS measurements. Nothing shorter than about
  * 0.5us can happen - the tape signal cannot fall away faster than that - and
  * the count falls off logarithmically as they get longer, so the short ones
- * dominate and the 300us ones are rare. A permanent defect (a crease or a
- * scratch) is longer still and always in the same place. */
+ * dominate and the 300us ones are rare. */
 #define ACTIVE_LINE_US 52.7 /* active picture time of one NTSC line */
 #define DROPOUT_MIN_US 0.5
 #define DROPOUT_MAX_US 200.0
-#define DROPOUT_PERM_US 180.0
 
 /* Power on/off envelope (seconds), ported from the reference PowerEnvelope. */
 #define WARMUP_SEC 1.5f
@@ -134,7 +132,9 @@ struct composite_tv {
 	float flagging;
 	float head_switch;
 	float dropout;
-	bool dropout_doc;
+	int dropout_mode; /* 0 none, 1 grey restorer, 2 1H delay line */
+	float tape_damage;
+	float tape_damage_pos;
 	float beat_gain;
 	float beat_norm;
 	float burst_len;
@@ -386,7 +386,9 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
 	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
 	f->dropout = glitch ? (float)obs_data_get_double(s, "dropout") : 0.0f;
-	f->dropout_doc = obs_data_get_bool(s, "dropout_doc");
+	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
+	f->tape_damage = glitch ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
+	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
 	f->beat_gain = glitch ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
@@ -728,23 +730,22 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	const float dop = clampf(f->dropout + b * 0.6f, 0.0f, 1.6f);
 	const float line_us = (float)(ACTIVE_LINE_US * (double)ACTIVE_LINES / (double)f->scan_lines);
 	float prob = 0.0f;
-	float perm = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
 		 * minute of a good tape and a few hundred for a ruined one; the
 		 * top runs well past both, because a faithful maximum would be
 		 * far too quiet to work as a glitch control. */
 		prob = fminf(0.0018f * expf(9.3f * dop) / (float)f->scan_lines, 0.25f);
-		/* Creases and scratches are rare and permanent, so they only turn
-		 * up once the tape is meant to be in poor condition. */
-		perm = 0.004f * fmaxf(dop - 0.3f, 0.0f);
 	}
 	set_f(e, "dropout_prob", prob);
-	set_f(e, "dropout_perm", perm);
 	set_f(e, "dropout_min", (float)DROPOUT_MIN_US / line_us);
 	set_f(e, "dropout_span", (float)log(DROPOUT_MAX_US / DROPOUT_MIN_US));
-	set_f(e, "dropout_long", (float)DROPOUT_PERM_US / line_us);
-	set_f(e, "dropout_doc", f->dropout_doc ? 1.0f : 0.0f);
+	set_f(e, "dropout_mode", (float)f->dropout_mode);
+	/* The crease is placed rather than rolled for: the slider is how many
+	 * scan lines of signal it takes out, so 0.5 is a full line and anything
+	 * past that wraps onto the lines below. */
+	set_f(e, "damage_len", f->tape_damage * 2.0f);
+	set_f(e, "damage_line", floorf(f->tape_damage_pos * ((float)f->scan_lines - 1.0f)));
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;
@@ -957,7 +958,9 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_FLAGGING 0.0
 #define DEF_HEAD_SWITCH 0.0
 #define DEF_DROPOUT 0.0
-#define DEF_DROPOUT_DOC false
+#define DEF_DROPOUT_MODE 0
+#define DEF_TAPE_DAMAGE 0.0
+#define DEF_TAPE_DAMAGE_POS 0.5
 #define DEF_BEAT_GAIN 0.0
 #define DEF_BEAT_FREQ 2.5
 #define DEF_BURST_LEN 0.4
@@ -1084,7 +1087,16 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
 			     DEF_HEAD_SWITCH);
 	ctv_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
-	ctv_add_bool(g, "dropout_doc", obs_module_text("CompositeTV.DropoutDoc"), DEF_DROPOUT_DOC);
+	obs_property_t *dm = obs_properties_add_list(g, "dropout_mode", obs_module_text("CompositeTV.DropoutMode"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.None"), 0);
+	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.Grey"), 1);
+	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.Delay"), 2);
+	ctv_set_list_default_tip(dm, DEF_DROPOUT_MODE);
+	ctv_add_float_slider(g, "tape_damage", obs_module_text("CompositeTV.TapeDamage"), 0.0, 1.0, 0.01,
+			     DEF_TAPE_DAMAGE);
+	ctv_add_float_slider(g, "tape_damage_pos", obs_module_text("CompositeTV.TapeDamagePos"), 0.0, 1.0, 0.01,
+			     DEF_TAPE_DAMAGE_POS);
 	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
 	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
@@ -1143,7 +1155,9 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
 	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
 	obs_data_set_default_double(s, "dropout", DEF_DROPOUT);
-	obs_data_set_default_bool(s, "dropout_doc", DEF_DROPOUT_DOC);
+	obs_data_set_default_int(s, "dropout_mode", DEF_DROPOUT_MODE);
+	obs_data_set_default_double(s, "tape_damage", DEF_TAPE_DAMAGE);
+	obs_data_set_default_double(s, "tape_damage_pos", DEF_TAPE_DAMAGE_POS);
 	obs_data_set_default_double(s, "beat_gain", DEF_BEAT_GAIN);
 	obs_data_set_default_double(s, "beat_freq", DEF_BEAT_FREQ);
 	obs_data_set_default_double(s, "burst_len", DEF_BURST_LEN);
