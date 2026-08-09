@@ -742,42 +742,61 @@ float4 PSDisplay(VertData v) : TARGET
 		float li = floor(lineF);
 		float hit = 0.0;
 		float top = 0.0;
+		float height = 1.0;
 		float x0 = 0.0;
 		float x1 = 0.0;
 		for (int k = 0; k < 3; ++k) {
 			float l0 = li - (float)k;
-			float height = 1.0 + floor(hash13(float3(l0, dseed, 19.0)) * 3.0);
-			if (hit < 0.5 && (float)k < height && hash13(float3(l0, dseed, 11.0)) < dropout * 0.03) {
+			// The defect is a fixed size on the tape, so its height belongs
+			// to the recorded 486-line raster: drawing fewer lines makes it
+			// cover fewer of them, down to a fraction of one.
+			float h = max((1.0 + floor(hash13(float3(l0, dseed, 19.0)) * 3.0)) * active_lines / 486.0, 0.6);
+			if (hit < 0.5 && (float)k < h && hash13(float3(l0, dseed, 11.0)) < dropout * 0.03) {
 				top = l0;
+				height = h;
 				x0 = hash13(float3(l0, dseed, 13.0)) * 0.9;
 				x1 = x0 + 0.05 + hash13(float3(l0, dseed, 17.0)) * 0.25;
 				hit = 1.0;
 			}
 		}
 
-		if (hit > 0.5 && uv.x > x0 && uv.x < x1) {
+		if (hit > 0.5) {
+			// Contact is lost and regained gradually, so the hole is a
+			// spindle rather than a brick: full length through the middle of
+			// the block, tapering away at its top and bottom edge, and
+			// drifting sideways as the tape travels past the head.
+			float vt = saturate((lineF - top) / height);
+			float prof = pow(max(sin(PI * vt), 0.0), 0.45);
+			float halfw = 0.5 * (x1 - x0) * prof;
+			float cx = 0.5 * (x0 + x1) + (x1 - x0) * 0.25 * (vt - 0.5);
+			float a = saturate((halfw - abs(uv.x - cx)) / max(halfw * 0.3, 0.0015));
+
 			if (dropout_doc > 0.5) {
 				// Dropout compensator: a 1H delay line recirculates the
 				// last good line, so the whole block repeats it. Colour
 				// survives - the delay carries the signal, not just luma.
 				int src = (int)top - 1;
+				float3 rep = float3(0.0, 0.0, 0.0);
 				if (src >= 0)
-					col = sampleLine(src, uv.x);
-				else
-					col = float3(0.0, 0.0, 0.0);
+					rep = sampleLine(src, uv.x);
+				col = lerp(col, rep, a);
 			} else {
 				// Uncompensated: with the luma FM carrier gone the
 				// demodulator has nothing to lock to and rails past peak
-				// white. Nothing of the picture is left underneath.
-				col = float3(1.08, 1.08, 1.08);
+				// white - which is a video level, so the streak answers to
+				// contrast and brightness exactly as peak white does.
+				float white = max(contrast + brightness, 0.0) * 1.08;
+				col = lerp(col, float3(white, white, white), a);
+
+				// The chroma carrier dropped out with it and the colour
+				// killer takes a moment to come back, so the line runs
+				// monochrome out of the streak.
+				if (uv.x > cx + halfw) {
+					float fade = saturate(1.0 - (uv.x - cx - halfw) * 5.5) * prof;
+					float lum = dot(col, float3(0.299, 0.587, 0.114));
+					col = lerp(col, float3(lum, lum, lum), fade);
+				}
 			}
-		} else if (hit > 0.5 && dropout_doc < 0.5 && uv.x >= x1) {
-			// The chroma carrier dropped out with it and the colour killer
-			// takes a moment to come back, so the line runs monochrome out
-			// of the streak.
-			float fade = saturate(1.0 - (uv.x - x1) * 5.5);
-			float lum = dot(col, float3(0.299, 0.587, 0.114));
-			col = lerp(col, float3(lum, lum, lum), fade);
 		}
 	}
 
