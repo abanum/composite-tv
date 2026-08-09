@@ -4,6 +4,15 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/common/bootstrap.cmake" NO_POLICY_SCO
 
 project(${_name} VERSION ${_version})
 
+# bootstrap.cmake reads the version out of buildspec.json at configure time and
+# it is baked into PLUGIN_VERSION, so a bump that only rebuilds keeps shipping
+# the previously configured number. Re-configure whenever the file changes.
+set_property(
+  DIRECTORY
+  APPEND
+  PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/buildspec.json"
+)
+
 option(ENABLE_FRONTEND_API "Use obs-frontend-api for UI functionality" OFF)
 option(ENABLE_QT "Use Qt functionality" OFF)
 
