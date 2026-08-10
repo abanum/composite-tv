@@ -93,8 +93,6 @@ struct composite_tv {
 	float cutoff_q;
 	float enc_chroma_gain;
 	float peaking;
-	float ring_decay; /* TEMPORARY tuning */
-	float ring_taps;  /* TEMPORARY tuning */
 	int aspect_mode;
 	int screen_aspect;
 	float agc_level;
@@ -389,8 +387,6 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
 	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
 	f->peaking = glitch ? (float)obs_data_get_double(s, "peaking") : 0.0f;
-	f->ring_decay = (float)obs_data_get_double(s, "ring_decay");
-	f->ring_taps = (float)obs_data_get_double(s, "ring_taps");
 	f->dropout = glitch ? (float)obs_data_get_double(s, "dropout") : 0.0f;
 	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
 	f->tape_damage = glitch ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
@@ -641,8 +637,6 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "peaking", f->peaking);
-	set_f(e, "ring_decay", f->ring_decay);
-	set_f(e, "ring_taps", f->ring_taps);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
@@ -934,8 +928,6 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
-#define DEF_RING_DECAY 0.78 /* TEMPORARY tuning */
-#define DEF_RING_TAPS 8.0   /* TEMPORARY tuning */
 #define DEF_CHROMA_GAIN 0.70
 #define DEF_COLOR_KILLER false
 #define DEF_CHROMA_DRIFT 0.6
@@ -1089,13 +1081,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 
 	/* --- glitches (collapsible, switched off by default) --- */
 	obs_properties_t *g = obs_properties_create();
-	ctv_add_float_slider(g, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01, DEF_PEAKING);
-	/* TEMPORARY: tuning aids for the peaking kernel. Once the shape is
-	 * settled, fold the values back into constants and drop these two
-	 * sliders, their settings, their locale strings and their uniforms. */
-	ctv_add_float_slider(g, "ring_decay", obs_module_text("CompositeTV.RingDecay"), 0.50, 0.97, 0.01,
-			     DEF_RING_DECAY);
-	ctv_add_float_slider(g, "ring_taps", obs_module_text("CompositeTV.RingTaps"), 2.0, 26.0, 1.0, DEF_RING_TAPS);
+	obs_property_t *pk =
+		ctv_add_float_slider(g, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01, DEF_PEAKING);
+	ctv_add_tip_note(pk, obs_module_text("CompositeTV.Peaking.Tip"));
 	ctv_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01, DEF_GHOST_GAIN);
 	ctv_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0,
 			     DEF_GHOST_DELAY);
@@ -1168,8 +1156,6 @@ static void ntsc_defaults(obs_data_t *s)
 
 	obs_data_set_default_bool(s, "glitch_enable", DEF_GLITCH_ENABLE);
 	obs_data_set_default_double(s, "peaking", DEF_PEAKING);
-	obs_data_set_default_double(s, "ring_decay", DEF_RING_DECAY);
-	obs_data_set_default_double(s, "ring_taps", DEF_RING_TAPS);
 	obs_data_set_default_double(s, "ghost_gain", DEF_GHOST_GAIN);
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
 	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);

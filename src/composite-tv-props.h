@@ -66,6 +66,21 @@ static inline obs_property_t *ctv_add_bool(obs_properties_t *p, const char *name
 	return prop;
 }
 
+/* Add a line of advice under the default, for the few controls whose effect
+ * depends on another one being set a certain way. */
+static inline void ctv_add_tip_note(obs_property_t *prop, const char *note)
+{
+	if (!prop || !note)
+		return;
+	const char *have = obs_property_long_description(prop);
+	char tip[512];
+	if (have && *have)
+		snprintf(tip, sizeof(tip), "%s\n%s", have, note);
+	else
+		snprintf(tip, sizeof(tip), "%s", note);
+	obs_property_set_long_description(prop, tip);
+}
+
 /* Call once the list is populated: the tooltip quotes the entry's own label
  * rather than the raw number stored in the settings. */
 static inline void ctv_set_list_default_tip(obs_property_t *prop, long long def)
