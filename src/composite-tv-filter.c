@@ -92,6 +92,7 @@ struct composite_tv {
 	float cutoff_i;
 	float cutoff_q;
 	float enc_chroma_gain;
+	float peaking;
 	int aspect_mode;
 	int screen_aspect;
 	float agc_level;
@@ -337,6 +338,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->cutoff_i = (float)(obs_data_get_double(s, "chroma_band_i") * MHZ_TO_NORM);
 	f->cutoff_q = (float)(obs_data_get_double(s, "chroma_band_q") * MHZ_TO_NORM);
 	f->enc_chroma_gain = (float)obs_data_get_double(s, "enc_chroma_gain");
+	f->peaking = (float)obs_data_get_double(s, "peaking");
 	f->aspect_mode = (int)obs_data_get_int(s, "aspect_mode");
 	f->screen_aspect = (int)obs_data_get_int(s, "screen_aspect");
 	f->powered = obs_data_get_bool(s, "power");
@@ -634,6 +636,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_i", f->cutoff_i);
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
+	set_f(e, "peaking", f->peaking);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
@@ -924,6 +927,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_AGC_JITTER 0.06
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
+#define DEF_PEAKING 0.0
 #define DEF_CHROMA_GAIN 0.70
 #define DEF_COLOR_KILLER false
 #define DEF_CHROMA_DRIFT 0.6
@@ -1015,6 +1019,7 @@ static obs_properties_t *ntsc_get_properties(void *data)
 
 	ctv_add_float_slider(p, "luma_bandwidth", obs_module_text("CompositeTV.LumaBandwidth"), 1.0, 4.2, 0.1,
 			     DEF_LUMA_BANDWIDTH);
+	ctv_add_float_slider(p, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01, DEF_PEAKING);
 	ctv_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01,
 			     DEF_CHROMA_GAIN);
 	ctv_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"), DEF_COLOR_KILLER);
@@ -1120,6 +1125,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
+	obs_data_set_default_double(s, "peaking", DEF_PEAKING);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
 	obs_data_set_default_bool(s, "color_killer", DEF_COLOR_KILLER);
 	obs_data_set_default_double(s, "chroma_drift", DEF_CHROMA_DRIFT);

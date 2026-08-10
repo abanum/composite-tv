@@ -30,6 +30,7 @@ uniform float luma_cutoff;        // Y bandwidth / fs
 uniform float cutoff_i;           // I bandwidth / fs
 uniform float cutoff_q;           // Q bandwidth / fs
 uniform float enc_chroma_gain;    // modulation chroma gain
+uniform float peaking;            // video amplifier peaking (trailing edge ringing)
 uniform float burst_phase;        // colour-burst reference phase [rad]
 uniform float field_base_phase;   // per-field base subcarrier phase [rad]
 uniform float aspect_mode;        // 0: letterbox, 1: horizontal squeeze
@@ -143,6 +144,9 @@ uniform float flash;              // discharge flash amount
 /* Composite storage encoding shared by the encoder and everything downstream */
 #define STORE_BIAS 0.5
 #define STORE_SCALE 0.375
+
+/* How fast the peaking resonance dies away, per sample. */
+#define RING_DECAY 0.78
 
 sampler_state pointClamp {
 	Filter    = Point;
@@ -307,6 +311,11 @@ float4 PSEncode(VertData v) : TARGET
 	float2 sinQ = float2(1.0, 0.0);
 	float2 hamQ = float2(1.0, 0.0);
 
+	/* Peaking accumulator: see the tap loop. */
+	float ring = 0.0;
+	float ringN = 0.0;
+	float decay = 1.0;
+
 	for (int k = 1; k <= R_Q; ++k) {
 		float fk = (float)k;
 		float3 yp = rgb2yiq(sampleRGB(v.uv.x + fk * du, rowY, scale, rowOut));
@@ -328,9 +337,24 @@ float4 PSEncode(VertData v) : TARGET
 			hamY = rotStep(hamY, HAM9);
 			float wy = 2.0 * luma_cutoff * (sinY.y / (Ay * fk)) * (0.54 + 0.46 * hamY.x);
 			y += (yp.x + ym.x) * wy; ny += 2.0 * wy;
+
+			// Peaking. A real video amplifier is underdamped, so an edge
+			// leaves a decaying oscillation behind it at the filter's own
+			// corner frequency - which sinY already carries. Only samples
+			// that have already gone by contribute, so the ripple trails
+			// the edge instead of running ahead of it: that causality is
+			// what separates an analogue chain from a linear-phase filter,
+			// whose ringing is symmetrical. Taken against the centre tap so
+			// flat picture stays flat.
+			decay *= RING_DECAY;
+			float hk = sinY.y * decay;
+			ring += (ym.x - yiq0.x) * hk;
+			ringN += abs(hk);
 		}
 	}
 	y  /= max(ny, 1.0e-6);
+	if (peaking > 0.0)
+		y += peaking * ring / max(ringN, 1.0e-6);
 	ci /= max(ni, 1.0e-6);
 	cq /= max(nq, 1.0e-6);
 
