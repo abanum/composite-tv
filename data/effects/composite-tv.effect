@@ -532,6 +532,22 @@ float4 PSDetect(VertData v) : TARGET
 		}
 	}
 
+	// Head switching. At the foot of the field the drum hands the tape over
+	// from one head to the other, and for the moment that takes there is no
+	// RF to demodulate - so the last lines come through as noise. The tear
+	// that goes with it is a timing fault and stays with the beam; this is
+	// the part that is in the signal, and it uses the same band shape so the
+	// two line up.
+	if (head_switch > 0.0) {
+		float fromBottom = 1.0 - ((float)ln + 0.5) / field_size.y;
+		float band = head_switch * 0.05;
+		if (fromBottom < band) {
+			float depth = saturate(1.0 - fromBottom / max(band, 1.0e-4));
+			float nz = hash13(float3((float)n, (float)ln, (float)field_seed + 31.0));
+			composite = lerp(composite, 0.15 + 0.8 * nz, depth);
+		}
+	}
+
 	// Multipath ghost: a delayed, attenuated copy of the same carrier. Added
 	// before Y/C separation, so the ghost carries chroma and smears colour
 	// exactly like a real reflection. Negative delay gives a leading ghost.
