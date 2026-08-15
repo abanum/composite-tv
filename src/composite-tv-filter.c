@@ -738,28 +738,27 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
 	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
-	/* Dropout. The slider is a rate, and the shader wants a per-line chance
-	 * of one starting plus the length distribution, both of which depend on
-	 * how long a drawn line lasts. */
+	/* Dropout. It lives in the signal now, so its lengths are line periods
+	 * and its rate is per field row - nothing here depends on how many lines
+	 * the tube happens to be drawing. */
 	const float dop = clampf(f->dropout + b * 0.6f, 0.0f, 1.6f);
-	const float line_us = (float)(ACTIVE_LINE_US * (double)ACTIVE_LINES / (double)f->scan_lines);
 	float prob = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
 		 * minute of a good tape and a few hundred for a ruined one; the
 		 * top runs well past both, because a faithful maximum would be
 		 * far too quiet to work as a glitch control. */
-		prob = fminf(0.0018f * expf(9.3f * dop) / (float)f->scan_lines, 0.25f);
+		prob = fminf(0.0018f * expf(9.3f * dop) / (float)FIELD_H, 0.25f);
 	}
 	set_f(e, "dropout_prob", prob);
-	set_f(e, "dropout_min", (float)DROPOUT_MIN_US / line_us);
+	set_f(e, "dropout_min", (float)(DROPOUT_MIN_US / ACTIVE_LINE_US));
 	set_f(e, "dropout_span", (float)log(DROPOUT_MAX_US / DROPOUT_MIN_US));
 	set_f(e, "dropout_mode", (float)f->dropout_mode);
 	/* The crease is placed rather than rolled for: the slider is how many
-	 * scan lines of signal it takes out, so 0.5 is a full line and anything
-	 * past that wraps onto the lines below. */
+	 * line periods of signal it takes out, so 0.5 is a whole line and
+	 * anything past that wraps onto the rows below. */
 	set_f(e, "damage_len", f->tape_damage * 2.0f);
-	set_f(e, "damage_line", floorf(f->tape_damage_pos * ((float)f->scan_lines - 1.0f)));
+	set_f(e, "damage_line", floorf(f->tape_damage_pos * (float)(FIELD_H - 1)));
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;

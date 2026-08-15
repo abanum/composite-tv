@@ -114,14 +114,15 @@ uniform float vblank_lines;       // vertical blanking depth [lines]
 uniform float h_jitter;           // per-line horizontal jitter
 uniform float flagging;           // top-of-picture horizontal bend
 uniform float head_switch;        // VHS head-switching tear at the bottom
-// Tape dropout. Lengths are in drawn-line periods and the probabilities are
-// per drawn line; the CPU derives both from the measured statistics.
-uniform float dropout_prob;       // chance a debris dropout starts on a line
+// Tape dropout. Applied to the composite signal in the detect pass, so lengths
+// are line periods and the rate is per field row; the CPU derives both from the
+// measured statistics.
+uniform float dropout_prob;       // chance a debris dropout starts on a row
 uniform float dropout_min;        // shortest dropout
 uniform float dropout_span;       // ln(longest / shortest)
 uniform float dropout_mode;       // 0: none, 1: grey level restorer, 2: 1H delay line
 uniform float damage_len;         // permanent crease / scratch, length in lines (0 = none)
-uniform float damage_line;        // the line it is cut across
+uniform float damage_line;        // the field row it is cut across
 
 // Degauss (demagnetising coil): a decaying AC field warps the beam and
 // briefly ruins purity. All zero = inactive, which is the normal path.
@@ -404,6 +405,73 @@ float2 noiseAt(int n, int ln)
 	return image.Sample(pointClamp, uv).ba * 8.0 - 4.0;
 }
 
+// A dropout is a stretch of tape signal that never reaches the head, so it
+// lives on the time axis rather than on the raster: t = row + x, one unit per
+// line period. One that starts late in a line simply carries on at the start of
+// the next, which is why a long defect climbs the picture as a staircase
+// instead of sitting in it as a block. Measured lengths run from about 0.5us -
+// below that the tape signal cannot fall away in time - to a millisecond, with
+// the count falling off logarithmically as they get longer, so the short ones
+// dominate by far.
+//
+// Rows here are field rows, because that is what the signal is made of: within
+// one field the rows are consecutive line periods, which is exactly the axis a
+// dropout runs along.
+//
+// Returns how much of (row, x) is missing. The ends ramp because head contact
+// is lost and regained gradually. `age` is how many line periods the defect has
+// already run, which is what a delay-line compensator has to recirculate.
+float dropoutAt(int row, float x, out float age, out float startLine, out float span)
+{
+	age = 0.0;
+	startLine = 0.0;
+	span = 0.0;
+	float cover = 0.0;
+
+	// Far enough back to catch a defect that started on an earlier line and is
+	// still running: the longest one the CPU hands over is just under four
+	// line periods, and it may have started at the very end of its line.
+	for (int k = 0; k < 5; ++k) {
+		float l0 = (float)(row - k);
+
+		// Two populations. Debris shed by the tape lands somewhere new on
+		// every pass, so it is keyed to the field; a crease or a scratch is
+		// cut into the surface, comes back at the same place every time, and
+		// is placed by hand rather than rolled for.
+		for (int s = 0; s < 2; ++s) {
+			float len = 0.0;
+			float x0 = 0.0;
+			if (s == 0) {
+				if (hash13(float3(l0, (float)field_seed, 11.0)) < dropout_prob) {
+					float u = hash13(float3(l0, (float)field_seed, 17.0));
+					len = dropout_min * exp(u * u * u * dropout_span);
+					x0 = hash13(float3(l0, (float)field_seed, 13.0));
+				}
+			} else if (damage_len > 0.0 && abs(l0 - damage_line) < 0.5) {
+				len = damage_len;
+			}
+
+			if (len > 0.0) {
+				float pos = (float)k + x - x0;
+				if (pos >= 0.0 && pos < len) {
+					// Contact is lost and regained gradually, so the
+					// two ends ramp rather than switch.
+					float ramp = max(len * 0.15, 0.004);
+					float a = saturate(min(pos, len - pos) / ramp);
+					if (a > cover) {
+						cover = a;
+						age = (float)k;
+						startLine = l0;
+						span = len;
+					}
+				}
+			}
+		}
+	}
+
+	return cover;
+}
+
 float4 PSDetect(VertData v) : TARGET
 {
 	int2 fc = fieldCoord(v.uv);
@@ -427,6 +495,41 @@ float4 PSDetect(VertData v) : TARGET
 	noise *= noise_norm_inv;
 
 	float composite = compositeAt(n, ln);
+
+	// Tape dropout, applied to the signal itself rather than to the picture:
+	// the deck put this on its output long before anything downstream saw it,
+	// so it has to survive detection and decoding like everything else. That
+	// is also what makes the colour behave - a stretch of signal with no
+	// subcarrier in it decodes as monochrome on its own, with nothing here
+	// having to say so.
+	if (dropout_prob > 0.0 || damage_len > 0.0) {
+		float age, startRow, span;
+		float a = dropoutAt(ln, ((float)n + 0.5) / field_size.x, age, startRow, span);
+		if (a > 0.0) {
+			float lost;
+			if (dropout_mode > 1.5) {
+				// A 1H delay line, which recirculates its own output:
+				// each further line the defect runs comes back weaker.
+				// Averaging two samples a half subcarrier cycle apart is
+				// how a real one drops the chroma it cannot correct - at
+				// 4fsc that is exactly two samples.
+				int src = (int)startRow - 1;
+				lost = 0.5 * (compositeAt(n - 1, src) + compositeAt(n + 1, src)) * pow(0.8, age);
+			} else if (dropout_mode > 0.5) {
+				// Grey level restorer: half amplitude, no subcarrier.
+				lost = 0.5;
+			} else {
+				// Uncompensated: the luma FM demodulator has nothing to
+				// lock to and rails past peak white. Over a long defect
+				// there is nothing for the limiter either, so what comes
+				// out sparkles instead of sitting flat.
+				float sp = saturate((span - 0.25) * 3.0);
+				float nz = hash13(float3((float)n, (float)ln, (float)field_seed));
+				lost = 1.1 * lerp(1.0, 0.25 + 1.1 * nz, sp);
+			}
+			composite = lerp(composite, lost, a);
+		}
+	}
 
 	// Multipath ghost: a delayed, attenuated copy of the same carrier. Added
 	// before Y/C separation, so the ghost carries chroma and smears colour
@@ -642,9 +745,12 @@ float3 shadowMask(float2 suv)
 // rare, so two lines of history is enough to look for one.
 float dropoutSkew(int li)
 {
+	// The defect belongs to the signal, which is counted in field rows, while
+	// the beam is counted in drawn lines.
+	float row = floor((float)li * field_row_step);
 	float o = 0.0;
 	for (int k = 1; k <= 2; ++k) {
-		float l0 = (float)(li - k);
+		float l0 = row - (float)k;
 		float decay = 1.0 / (float)k;
 
 		if (hash13(float3(l0, (float)field_seed, 11.0)) < dropout_prob) {
@@ -733,74 +839,6 @@ float3 sampleLine(int lineIndex, float x)
 	return outCol;
 }
 
-// A dropout is a stretch of tape signal that never reaches the head, so it
-// lives on the time axis rather than on the raster: t = line + x, one unit per
-// drawn line. One that starts late in a line simply carries on at the start of
-// the next, which is why a long defect climbs the picture as a staircase
-// instead of sitting in it as a block. Measured lengths run from about 0.5us -
-// below that the tape signal cannot fall away in time - to a millisecond, with
-// the count falling off logarithmically as they get longer, so the short ones
-// dominate by far.
-//
-// Returns how much of (lineIndex, x) is missing. The ends ramp because head
-// contact is lost and regained gradually. `age` is how many line periods the
-// defect has already run, which is what a delay-line compensator has to
-// recirculate, and `kill` is the colour killer still recovering after it.
-float dropoutAt(int lineIndex, float x, out float age, out float startLine, out float kill, out float span)
-{
-	age = 0.0;
-	startLine = 0.0;
-	kill = 0.0;
-	span = 0.0;
-	float cover = 0.0;
-
-	// Far enough back to catch a defect that started on an earlier line and is
-	// still running: the longest one the CPU hands over is just under four
-	// line periods, and it may have started at the very end of its line.
-	for (int k = 0; k < 5; ++k) {
-		float l0 = (float)(lineIndex - k);
-
-		// Two populations. Debris shed by the tape lands somewhere new on
-		// every pass, so it is keyed to the field; a crease or a scratch is
-		// cut into the surface, comes back at the same place every time, and
-		// is placed by hand rather than rolled for.
-		for (int s = 0; s < 2; ++s) {
-			float len = 0.0;
-			float x0 = 0.0;
-			if (s == 0) {
-				if (hash13(float3(l0, (float)field_seed, 11.0)) < dropout_prob) {
-					float u = hash13(float3(l0, (float)field_seed, 17.0));
-					len = dropout_min * exp(u * u * u * dropout_span);
-					x0 = hash13(float3(l0, (float)field_seed, 13.0));
-				}
-			} else if (damage_len > 0.0 && abs(l0 - damage_line) < 0.5) {
-				len = damage_len;
-			}
-
-			if (len > 0.0) {
-				float pos = (float)k + x - x0;
-				if (pos >= 0.0 && pos < len) {
-					// Contact is lost and regained gradually, so the
-					// two ends ramp rather than switch.
-					float ramp = max(len * 0.15, 0.004);
-					float a = saturate(min(pos, len - pos) / ramp);
-					if (a > cover) {
-						cover = a;
-						age = (float)k;
-						startLine = l0;
-						span = len;
-					}
-					kill = 1.0;
-				} else if (pos >= len && pos < len + 0.25) {
-					kill = max(kill, saturate(1.0 - (pos - len) * 4.0));
-				}
-			}
-		}
-	}
-
-	return cover;
-}
-
 float4 PSDisplay(VertData v) : TARGET
 {
 	// Inspection zoom: look at a smaller piece of the output, blown up. Applied
@@ -861,72 +899,12 @@ float4 PSDisplay(VertData v) : TARGET
 	float3 col = float3(0.0, 0.0, 0.0);
 	float wsum = 0.0;
 	float sigma = max(spot_v, 0.15);
-	bool anyDropout = (dropout_prob > 0.0) || (damage_len > 0.0);
 	for (int d = -1; d <= 2; ++d) {
 		int li = base + d;
 		if (li >= 0 && li < maxLine) {
 			float dist = (float)li - lineF;
 			float wgt = exp(-0.5 * (dist * dist) / (sigma * sigma));
 			float3 c = sampleLine(li, uv.x);
-
-			// Punched into the line the beam is drawing, so the spot
-			// smears it vertically and the scan-line structure below
-			// rides over it, exactly as it does over picture.
-			if (anyDropout) {
-				float age, startLine, kill, span;
-				float a = dropoutAt(li, uv.x, age, startLine, kill, span);
-				if (a > 0.0) {
-					// White is a video level, so it answers to the
-					// picture controls the same way peak white does.
-					float white = max(contrast + brightness, 0.0) * 1.08;
-					float3 lost;
-					if (dropout_mode > 1.5) {
-						// A 1H delay line, which recirculates its own
-						// output: every further line the defect runs
-						// comes back weaker, and after seven or eight
-						// there is nothing left to insert. What comes
-						// back is a band-limited copy, so the patch
-						// reads as a blurred slice of picture.
-						int src = (int)startLine - 1;
-						float3 rep = float3(0.0, 0.0, 0.0);
-						if (src >= 0) {
-							float w = spot_dx * 6.0;
-							rep = sampleLine(src, uv.x - w) +
-							      sampleLine(src, uv.x) +
-							      sampleLine(src, uv.x + w);
-							rep /= 3.0;
-						}
-						float lum = dot(rep, float3(0.299, 0.587, 0.114));
-						lost = float3(lum, lum, lum) * pow(0.8, age);
-					} else if (dropout_mode > 0.5) {
-						// Grey level restorer: the oldest answer, and
-						// the one digital patching went back to. Half
-						// amplitude, through the picture controls.
-						float g = max(0.5 * contrast + brightness, 0.0);
-						lost = float3(g, g, g);
-					} else {
-						// Nothing to lock to: the demodulator rails
-						// past peak white. Over a long defect an
-						// all-analog deck has no signal left to limit
-						// either, so what reaches the screen is a
-						// sparkling noise stripe rather than a clean
-						// bar.
-						float sp = saturate((span - 0.25) * 3.0);
-						float n = hash13(float3(floor(uv.x * field_size.x),
-									(float)li, (float)field_seed));
-						lost = float3(white, white, white) * lerp(1.0, 0.25 + 1.1 * n, sp);
-					}
-					c = lerp(c, lost, a);
-				}
-				// The chroma carrier goes with the luma, and no domestic
-				// deck restores it - it is killed to keep false colour
-				// off the screen - so the line runs monochrome until the
-				// killer comes back.
-				if (kill > 0.0) {
-					float lum = dot(c, float3(0.299, 0.587, 0.114));
-					c = lerp(c, float3(lum, lum, lum), kill);
-				}
-			}
 
 			col += c * wgt;
 			wsum += wgt;
