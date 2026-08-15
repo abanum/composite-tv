@@ -156,6 +156,10 @@ struct composite_tv {
 	obs_hotkey_id degauss_hotkey;
 	obs_hotkey_id power_hotkey;
 
+	/* debug waveform overlay */
+	bool scope_on;
+	float scope_line;
+
 	/* inspection zoom */
 	float preview_zoom;
 	float zoom_x;
@@ -397,6 +401,8 @@ static void ntsc_update(void *data, obs_data_t *s)
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
 	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
+	f->scope_on = obs_data_get_bool(s, "scope_on");
+	f->scope_line = (float)obs_data_get_double(s, "scope_line");
 	f->preview_zoom = (float)obs_data_get_double(s, "preview_zoom");
 	f->zoom_x = (float)obs_data_get_double(s, "zoom_x");
 	f->zoom_y = (float)obs_data_get_double(s, "zoom_y");
@@ -637,6 +643,8 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "peaking", f->peaking);
+	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
+	set_f(e, "scope_line", f->scope_line);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
@@ -870,6 +878,10 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 	set_tex(e, "field_prev", field_prev);
 	set_tex(e, "display_prev", disp_prev);
+	/* The debug scope traces the detector output, which the display pass has
+	 * no other reason to see. Bound whether or not it is switched on: the
+	 * sampler is in the compiled shader either way. */
+	set_tex(e, "scope_src", det ? det : field_cur);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
@@ -942,6 +954,8 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_SPOT_H 0.85
 #define DEF_SCANLINE 0.35
 #define DEF_PREVIEW_ZOOM 1.0
+#define DEF_SCOPE_ON false
+#define DEF_SCOPE_LINE 120.0
 #define DEF_ZOOM_X 0.5
 #define DEF_ZOOM_Y 0.5
 #define DEF_MASK_TYPE 0
@@ -1109,6 +1123,12 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
 	obs_properties_add_group(p, "glitch_enable", obs_module_text("CompositeTV.Glitch"), OBS_GROUP_CHECKABLE, g);
 
+	/* --- debug, last so it stays out of the way --- */
+	obs_property_t *sc = ctv_add_bool(p, "scope_on", obs_module_text("CompositeTV.Scope"), DEF_SCOPE_ON);
+	ctv_add_tip_note(sc, obs_module_text("CompositeTV.Scope.Tip"));
+	ctv_add_float_slider(p, "scope_line", obs_module_text("CompositeTV.ScopeLine"), 0.0, (double)(FIELD_H - 1), 1.0,
+			     DEF_SCOPE_LINE);
+
 	return p;
 }
 
@@ -1145,6 +1165,8 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "overscan", DEF_OVERSCAN);
 	obs_data_set_default_double(s, "degauss_len", DEF_DEGAUSS_LEN);
 	obs_data_set_default_double(s, "degauss_strength", DEF_DEGAUSS_STRENGTH);
+	obs_data_set_default_bool(s, "scope_on", DEF_SCOPE_ON);
+	obs_data_set_default_double(s, "scope_line", DEF_SCOPE_LINE);
 	obs_data_set_default_double(s, "preview_zoom", DEF_PREVIEW_ZOOM);
 	obs_data_set_default_double(s, "zoom_x", DEF_ZOOM_X);
 	obs_data_set_default_double(s, "zoom_y", DEF_ZOOM_Y);
