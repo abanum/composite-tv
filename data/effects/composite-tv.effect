@@ -26,6 +26,7 @@ uniform texture2d scope_src;      // Display: detected composite, for the debug 
 // Debug waveform overlay
 uniform float scope_on;
 uniform float scope_line;         // field row to trace
+uniform float scope_top;          // 1: draw the panel at the top instead
 
 uniform float2 field_size;        // (active samples per ln, active lines per field)
 uniform float2 output_size;       // (cx, cy) of the rendered output
@@ -1005,8 +1006,10 @@ float4 PSDisplay(VertData v) : TARGET
 		if (floor((float)base * field_row_step) == floor(scope_line))
 			outCol = lerp(outCol, float3(1.0, 0.15, 0.15), 0.30);
 
-		float y0 = 0.62;
-		float y1 = 0.98;
+		// The panel sits away from the line it is tracing, so the marker and
+		// the picture around it stay visible.
+		float y0 = (scope_top > 0.5) ? 0.02 : 0.62;
+		float y1 = y0 + 0.36;
 		if (v.uv.y > y0 && v.uv.y < y1) {
 			// The trace is drawn between this column's sample and the
 			// next one's, so a steep edge joins up instead of leaving

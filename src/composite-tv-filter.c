@@ -648,6 +648,8 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * viewer sees; the signal itself only has 243 rows per field, so two
 	 * neighbouring lines share one trace. */
 	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)));
+	/* Trace a line in the lower half and the panel moves out of its way. */
+	set_f(e, "scope_top", f->scope_line >= 241.0f ? 1.0f : 0.0f);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
