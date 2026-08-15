@@ -644,7 +644,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "peaking", f->peaking);
 	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
-	set_f(e, "scope_line", f->scope_line);
+	/* The setting is a scan line of the 486-line frame, which is what the
+	 * viewer sees; the signal itself only has 243 rows per field, so two
+	 * neighbouring lines share one trace. */
+	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)));
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
@@ -955,7 +958,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_SCANLINE 0.35
 #define DEF_PREVIEW_ZOOM 1.0
 #define DEF_SCOPE_ON false
-#define DEF_SCOPE_LINE 120.0
+#define DEF_SCOPE_LINE 240.0
 #define DEF_ZOOM_X 0.5
 #define DEF_ZOOM_Y 0.5
 #define DEF_MASK_TYPE 0
@@ -1126,8 +1129,8 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	/* --- debug, last so it stays out of the way --- */
 	obs_property_t *sc = ctv_add_bool(p, "scope_on", obs_module_text("CompositeTV.Scope"), DEF_SCOPE_ON);
 	ctv_add_tip_note(sc, obs_module_text("CompositeTV.Scope.Tip"));
-	ctv_add_float_slider(p, "scope_line", obs_module_text("CompositeTV.ScopeLine"), 0.0, (double)(FIELD_H - 1), 1.0,
-			     DEF_SCOPE_LINE);
+	ctv_add_float_slider(p, "scope_line", obs_module_text("CompositeTV.ScopeLine"), 0.0, (double)(ACTIVE_LINES - 1),
+			     1.0, DEF_SCOPE_LINE);
 
 	return p;
 }
