@@ -139,15 +139,20 @@ struct composite_tv {
 	float damage_speed;
 	float beat_gain;
 	float beat_norm;
-	float burst_len;
+	float burst_len; /* reception burst duration */
+	float sweep_sec; /* playback burst: seconds for the crease to cross once */
 
-	/* glitch animation state */
+	/* glitch animation state. The two halves of the fault set run their own
+	 * envelopes so a reception burst and a playback burst can overlap. */
 	double v_roll_pos;
 	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
-	float burst;          /* 1 -> 0 momentary glitch envelope */
-	long long glitch_pulse; /* bumped by the dock to fire a burst */
+	float burst_rx;           /* 1 -> 0 reception burst */
+	float burst_pb;           /* 1 -> 0 playback burst */
+	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
+	long long playback_pulse; /* and this one for a playback burst */
 	obs_hotkey_id glitch_hotkey;
+	obs_hotkey_id playback_hotkey;
 
 	/* degauss */
 	float degauss_len;
@@ -383,24 +388,33 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->vignette = (float)obs_data_get_double(s, "vignette");
 	f->overscan = (float)obs_data_get_double(s, "overscan");
 
-	/* Every glitch is gated by the group toggle, so apply the gate once here
-	 * and let the render path just read the values. */
-	const bool glitch = obs_data_get_bool(s, "glitch_enable");
-	f->ghost_gain = glitch ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
-	f->ghost_delay = glitch ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
-	f->v_roll_speed = glitch ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
-	f->h_jitter = glitch ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
-	f->flagging = glitch ? (float)obs_data_get_double(s, "flagging") : 0.0f;
-	f->head_switch = glitch ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
-	f->peaking = glitch ? (float)obs_data_get_double(s, "peaking") : 0.0f;
-	f->dropout = glitch ? (float)obs_data_get_double(s, "dropout") : 0.0f;
-	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
-	f->tape_damage = glitch ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
-	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
-	f->damage_speed = glitch ? (float)obs_data_get_double(s, "tape_damage_drift") : 0.0f;
-	f->beat_gain = glitch ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
+	/* Scenes saved before the faults were split in two carry a single switch
+	 * for both halves, so hand the new one the old one's state - otherwise
+	 * every tape fault would quietly switch itself off on upgrade. */
+	if (!obs_data_has_user_value(s, "playback_enable") && obs_data_get_bool(s, "glitch_enable"))
+		obs_data_set_bool(s, "playback_enable", true);
+
+	/* Each half is gated by its own group toggle, so apply the gates once
+	 * here and let the render path just read the values. */
+	const bool rx = obs_data_get_bool(s, "glitch_enable");
+	const bool pb = obs_data_get_bool(s, "playback_enable");
+	f->ghost_gain = rx ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
+	f->ghost_delay = rx ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
+	f->v_roll_speed = rx ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
+	f->h_jitter = rx ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
+	f->beat_gain = rx ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
+
+	f->flagging = pb ? (float)obs_data_get_double(s, "flagging") : 0.0f;
+	f->head_switch = pb ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
+	f->peaking = pb ? (float)obs_data_get_double(s, "peaking") : 0.0f;
+	f->dropout = pb ? (float)obs_data_get_double(s, "dropout") : 0.0f;
+	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
+	f->tape_damage = pb ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
+	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
+	f->damage_speed = pb ? (float)obs_data_get_double(s, "tape_damage_drift") : 0.0f;
+	f->sweep_sec = (float)obs_data_get_double(s, "sweep_sec");
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
 	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
@@ -423,11 +437,16 @@ static void ntsc_update(void *data, obs_data_t *s)
 	if (f->wire_width < 0.005f)
 		f->wire_width = 0.01f;
 
-	/* The dock fires a burst by incrementing this counter. */
+	/* The dock fires a burst by incrementing one of these counters. */
 	long long pulse = obs_data_get_int(s, "glitch_pulse");
 	if (pulse != f->glitch_pulse) {
 		f->glitch_pulse = pulse;
-		f->burst = 1.0f;
+		f->burst_rx = 1.0f;
+	}
+	long long ppulse = obs_data_get_int(s, "playback_pulse");
+	if (ppulse != f->playback_pulse) {
+		f->playback_pulse = ppulse;
+		f->burst_pb = 1.0f;
 	}
 	long long dpulse = obs_data_get_int(s, "degauss_pulse");
 	if (dpulse != f->degauss_pulse) {
@@ -436,7 +455,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	}
 }
 
-/* Hotkey: fire a momentary glitch burst. */
+/* Hotkey: fire a momentary reception burst. */
 static void ntsc_glitch_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
 {
 	UNUSED_PARAMETER(id);
@@ -444,7 +463,18 @@ static void ntsc_glitch_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotke
 	if (!pressed)
 		return;
 	struct composite_tv *f = data;
-	f->burst = 1.0f;
+	f->burst_rx = 1.0f;
+}
+
+/* Hotkey: fire a momentary playback burst - the tape faults. */
+static void ntsc_playback_hotkey(void *data, obs_hotkey_id id, obs_hotkey_t *hotkey, bool pressed)
+{
+	UNUSED_PARAMETER(id);
+	UNUSED_PARAMETER(hotkey);
+	if (!pressed)
+		return;
+	struct composite_tv *f = data;
+	f->burst_pb = 1.0f;
 }
 
 /* Hotkey: run the degauss coil. */
@@ -484,6 +514,9 @@ static void ntsc_filter_add(void *data, obs_source_t *parent)
 	f->glitch_hotkey = obs_hotkey_register_source(parent, "composite_tv.glitch",
 						      obs_module_text("CompositeTV.Hotkey.Glitch"),
 						      ntsc_glitch_hotkey, f);
+	f->playback_hotkey = obs_hotkey_register_source(parent, "composite_tv.playback",
+							obs_module_text("CompositeTV.Hotkey.Playback"),
+							ntsc_playback_hotkey, f);
 	f->degauss_hotkey = obs_hotkey_register_source(parent, "composite_tv.degauss",
 						       obs_module_text("CompositeTV.Hotkey.Degauss"),
 						       ntsc_degauss_hotkey, f);
@@ -496,11 +529,14 @@ static void ntsc_unregister_hotkeys(struct composite_tv *f)
 {
 	if (f->glitch_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->glitch_hotkey);
+	if (f->playback_hotkey != OBS_INVALID_HOTKEY_ID)
+		obs_hotkey_unregister(f->playback_hotkey);
 	if (f->degauss_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->degauss_hotkey);
 	if (f->power_hotkey != OBS_INVALID_HOTKEY_ID)
 		obs_hotkey_unregister(f->power_hotkey);
 	f->glitch_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->playback_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->degauss_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->power_hotkey = OBS_INVALID_HOTKEY_ID;
 }
@@ -518,6 +554,7 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	/* Registered on the parent in ntsc_filter_add; 0 is a valid hotkey id,
 	 * so the zeroed struct must not be left as-is. */
 	f->glitch_hotkey = OBS_INVALID_HOTKEY_ID;
+	f->playback_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->degauss_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->power_hotkey = OBS_INVALID_HOTKEY_ID;
 
@@ -538,7 +575,8 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	 * session, so adopting their values must not replay them now. */
 	f->power_state = f->powered ? POWER_ON : POWER_OFF;
 	f->power_elapsed = 0.0f;
-	f->burst = 0.0f;
+	f->burst_rx = 0.0f;
+	f->burst_pb = 0.0f;
 	f->degauss = 0.0f;
 	return f;
 }
@@ -729,10 +767,13 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "pixels_per_triad", tube_px * zoom / f->mask_pitch);
 	set_f(e, "wire_width", f->wire_width);
 
-	/* Glitches. The steady-state values were already gated by glitch_enable in
-	 * ntsc_update(); the momentary burst adds on top, so the dock button and
-	 * the hotkey still work from a clean picture. */
-	const float b = f->burst;
+	/* Glitches. The steady-state values were already gated by their group in
+	 * ntsc_update(); the momentary bursts add on top, so the dock buttons and
+	 * the hotkeys still work from a clean picture. Each fault answers to the
+	 * burst of the half it belongs to - a reception burst leaves the tape
+	 * alone and a playback burst leaves the aerial alone. */
+	const float brx = f->burst_rx;
+	const float bpb = f->burst_pb;
 	set_f(e, "ghost_gain", f->ghost_gain);
 	set_f(e, "ghost_delay", f->ghost_delay);
 	set_f(e, "beat_gain", f->beat_gain);
@@ -740,13 +781,13 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
 	set_f(e, "vblank_lines", bar_lines(f));
-	set_f(e, "h_jitter", clampf(f->h_jitter + b * 0.8f, 0.0f, 2.0f));
-	set_f(e, "flagging", clampf(f->flagging + b * 0.6f, 0.0f, 2.0f));
-	set_f(e, "head_switch", clampf(f->head_switch + b * 0.5f, 0.0f, 2.0f));
+	set_f(e, "h_jitter", clampf(f->h_jitter + brx * 0.8f, 0.0f, 2.0f));
+	set_f(e, "flagging", clampf(f->flagging + bpb * 0.6f, 0.0f, 2.0f));
+	set_f(e, "head_switch", clampf(f->head_switch + bpb * 0.5f, 0.0f, 2.0f));
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
 	 * the tube happens to be drawing. */
-	const float dop = clampf(f->dropout + b * 0.6f, 0.0f, 1.6f);
+	const float dop = clampf(f->dropout + bpb * 0.6f, 0.0f, 1.6f);
 	float prob = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
@@ -809,12 +850,20 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	f->chroma_phase_acc = fmod(f->chroma_phase_acc + (double)f->chroma_drift * dt, 2.0 * NS_PI);
 	power_advance(f, dt);
 
-	/* glitch animation: decay the burst, advance the roll and the beat */
-	if (f->burst > 0.0f) {
+	/* glitch animation: decay the two bursts, advance the roll and the beat.
+	 * A playback burst runs for exactly as long as the crease takes to cross
+	 * the picture once, because that sweep is what the burst is. */
+	const float sweep = f->sweep_sec > 0.05f ? f->sweep_sec : 2.0f;
+	if (f->burst_rx > 0.0f) {
 		float len = f->burst_len > 0.05f ? f->burst_len : 0.4f;
-		f->burst -= dt / len;
-		if (f->burst < 0.0f)
-			f->burst = 0.0f;
+		f->burst_rx -= dt / len;
+		if (f->burst_rx < 0.0f)
+			f->burst_rx = 0.0f;
+	}
+	if (f->burst_pb > 0.0f) {
+		f->burst_pb -= dt / sweep;
+		if (f->burst_pb < 0.0f)
+			f->burst_pb = 0.0f;
 	}
 	/* The burst kicks the vertical hold hard so the picture visibly tumbles
 	 * (several screens over the burst) before it re-locks. */
@@ -823,7 +872,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * jump the picture. */
 	const double frame_lines = (double)f->scan_lines;
 	const double cycle = frame_lines + (double)bar_lines(f);
-	float roll_speed = f->v_roll_speed + f->burst * 6.0f;
+	float roll_speed = f->v_roll_speed + f->burst_rx * 6.0f;
 	if (roll_speed != 0.0f) {
 		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * cycle * dt, cycle);
 	} else if (f->v_roll_pos != 0.0) {
@@ -841,10 +890,11 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	/* A crease is at a fixed place on the tape, not on the screen. Whether it
 	 * lands on the same lines twice depends on the tape keeping step with the
 	 * drum, and it does not quite, so the damaged band crawls through the
-	 * picture - which is what a creased tape actually looks like. The burst
-	 * drives it along the same way it drives the vertical hold, and zeroing
-	 * the speed hands the band back to its own slider. */
-	float damage_speed = f->damage_speed + f->burst * 3.0f;
+	 * picture - which is what a creased tape actually looks like. A playback
+	 * burst sends it across at exactly one screen per sweep, which is what
+	 * that setting means, and zeroing everything hands the band back to its
+	 * own slider. */
+	float damage_speed = f->damage_speed + (f->burst_pb > 0.0f ? 1.0f / sweep : 0.0f);
 	if (damage_speed != 0.0f) {
 		double p = f->damage_pos + (double)damage_speed * dt;
 		f->damage_pos = p - floor(p);
@@ -991,6 +1041,8 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_DEGAUSS_LEN 1.2
 #define DEF_DEGAUSS_STRENGTH 0.7
 #define DEF_GLITCH_ENABLE false
+#define DEF_PLAYBACK_ENABLE false
+#define DEF_SWEEP_SEC 2.0
 #define DEF_GHOST_GAIN 0.0
 #define DEF_GHOST_DELAY 24.0
 #define DEF_V_ROLL_SPEED 0.0
@@ -1116,37 +1168,46 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "degauss_strength", obs_module_text("CompositeTV.DegaussStrength"), 0.0, 1.0, 0.01,
 			     DEF_DEGAUSS_STRENGTH);
 
-	/* --- glitches (collapsible, switched off by default) --- */
+	/* --- faults, in two collapsible halves, both off by default. They are
+	 * split by where they come from, because that is what decides whether
+	 * they belong together: the aerial and the tape fail at their own times
+	 * and each half is fired on its own. --- */
 	obs_properties_t *g = obs_properties_create();
-	obs_property_t *pk =
-		ctv_add_float_slider(g, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01, DEF_PEAKING);
-	ctv_add_tip_note(pk, obs_module_text("CompositeTV.Peaking.Tip"));
 	ctv_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01, DEF_GHOST_GAIN);
 	ctv_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0,
 			     DEF_GHOST_DELAY);
 	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
 			     DEF_V_ROLL_SPEED);
 	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
-	ctv_add_float_slider(g, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01, DEF_FLAGGING);
-	ctv_add_float_slider(g, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
+	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
+	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
+	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
+	obs_properties_add_group(p, "glitch_enable", obs_module_text("CompositeTV.Glitch"), OBS_GROUP_CHECKABLE, g);
+
+	obs_properties_t *tp = obs_properties_create();
+	obs_property_t *pk = ctv_add_float_slider(tp, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01,
+						  DEF_PEAKING);
+	ctv_add_tip_note(pk, obs_module_text("CompositeTV.Peaking.Tip"));
+	ctv_add_float_slider(tp, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(tp, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
 			     DEF_HEAD_SWITCH);
-	ctv_add_float_slider(g, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
-	obs_property_t *dm = obs_properties_add_list(g, "dropout_mode", obs_module_text("CompositeTV.DropoutMode"),
+	ctv_add_float_slider(tp, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
+	obs_property_t *dm = obs_properties_add_list(tp, "dropout_mode", obs_module_text("CompositeTV.DropoutMode"),
 						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
 	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.None"), 0);
 	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.Grey"), 1);
 	obs_property_list_add_int(dm, obs_module_text("CompositeTV.DropoutMode.Delay"), 2);
 	ctv_set_list_default_tip(dm, DEF_DROPOUT_MODE);
-	ctv_add_float_slider(g, "tape_damage", obs_module_text("CompositeTV.TapeDamage"), 0.0, 1.0, 0.01,
+	ctv_add_float_slider(tp, "tape_damage", obs_module_text("CompositeTV.TapeDamage"), 0.0, 1.0, 0.01,
 			     DEF_TAPE_DAMAGE);
-	ctv_add_float_slider(g, "tape_damage_pos", obs_module_text("CompositeTV.TapeDamagePos"), 0.0, 1.0, 0.01,
+	ctv_add_float_slider(tp, "tape_damage_pos", obs_module_text("CompositeTV.TapeDamagePos"), 0.0, 1.0, 0.01,
 			     DEF_TAPE_DAMAGE_POS);
-	ctv_add_float_slider(g, "tape_damage_drift", obs_module_text("CompositeTV.TapeDamageDrift"), -2.0, 2.0, 0.01,
+	ctv_add_float_slider(tp, "tape_damage_drift", obs_module_text("CompositeTV.TapeDamageDrift"), -2.0, 2.0, 0.01,
 			     DEF_TAPE_DAMAGE_DRIFT);
-	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
-	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
-	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
-	obs_properties_add_group(p, "glitch_enable", obs_module_text("CompositeTV.Glitch"), OBS_GROUP_CHECKABLE, g);
+	obs_property_t *sw = ctv_add_float_slider(tp, "sweep_sec", obs_module_text("CompositeTV.SweepSec"), 0.2, 10.0,
+						  0.1, DEF_SWEEP_SEC);
+	ctv_add_tip_note(sw, obs_module_text("CompositeTV.SweepSec.Tip"));
+	obs_properties_add_group(p, "playback_enable", obs_module_text("CompositeTV.Playback"), OBS_GROUP_CHECKABLE, tp);
 
 	/* --- debug, last so it stays out of the way --- */
 	obs_property_t *sc = ctv_add_bool(p, "scope_on", obs_module_text("CompositeTV.Scope"), DEF_SCOPE_ON);
@@ -1202,6 +1263,8 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "wire_width", DEF_WIRE_WIDTH);
 
 	obs_data_set_default_bool(s, "glitch_enable", DEF_GLITCH_ENABLE);
+	obs_data_set_default_bool(s, "playback_enable", DEF_PLAYBACK_ENABLE);
+	obs_data_set_default_double(s, "sweep_sec", DEF_SWEEP_SEC);
 	obs_data_set_default_double(s, "peaking", DEF_PEAKING);
 	obs_data_set_default_double(s, "ghost_gain", DEF_GHOST_GAIN);
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);

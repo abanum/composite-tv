@@ -263,14 +263,18 @@ void composite_tv_dock_register(void)
 	slider->setValue(100);
 	layout->addWidget(slider);
 
-	/* The three actions share one row: power (drives picture and sound), a
-	 * momentary glitch burst, and the degauss coil. */
+	/* The actions share one row: power (drives picture and sound), a burst of
+	 * reception faults, a burst of playback faults, and the degauss coil. The
+	 * two bursts are separate because the aerial and the tape fail on their
+	 * own schedules. */
 	QPushButton *power = new QPushButton(T("CompositeTV.Dock.PowerOff"));
 	QPushButton *glitch = new QPushButton(T("CompositeTV.Dock.Glitch"));
+	QPushButton *playback = new QPushButton(T("CompositeTV.Dock.Playback"));
 	QPushButton *degauss = new QPushButton(T("CompositeTV.Dock.Degauss"));
 	QHBoxLayout *btn_row = new QHBoxLayout();
 	btn_row->addWidget(power, 1);
 	btn_row->addWidget(glitch, 1);
+	btn_row->addWidget(playback, 1);
 	btn_row->addWidget(degauss, 1);
 	layout->addLayout(btn_row);
 	layout->addStretch(1);
@@ -305,6 +309,9 @@ void composite_tv_dock_register(void)
 
 	QObject::connect(glitch, &QPushButton::clicked,
 			 [vid_combo]() { bump_filter_int(vid_combo->currentText(), FILTER_ID, "glitch_pulse"); });
+
+	QObject::connect(playback, &QPushButton::clicked,
+			 [vid_combo]() { bump_filter_int(vid_combo->currentText(), FILTER_ID, "playback_pulse"); });
 
 	/* Degauss drives picture and sound together. */
 	QObject::connect(degauss, &QPushButton::clicked, [vid_combo, aud_combo]() {

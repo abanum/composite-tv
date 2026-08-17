@@ -138,26 +138,36 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 「声 → 砂嵐」へ連続的にフェードします。音量・インターキャリア音はフィルタのプロパティで
 個別に調整できます。
 
-### グリッチ（受信不良の演出）
+### グリッチ（受信不良 / 再生不良の演出）
 
-フィルタ下部の「**グリッチ**」グループを ON にすると、受信機モデルの各段に破綻を
-差し込めます（OFF のときは完全に元の見え方に戻ります）。
+フィルタ下部にグループが 2 つあります。**アンテナ側の不調**と**テープ側の不調**は
+別々に起きるものなので、ON/OFF も一時発動も独立しています（両方 OFF のときは完全に
+元の見え方に戻ります）。
+
+**グリッチ（受信不良の演出）** — アンテナから来る不調
 
 | 項目 | 差し込む段 | 見え方 |
 |---|---|---|
-| リンギング | エンコード | 映像アンプの共振。縦エッジの**右側だけ**に波状の残響。強くしたいときは映像帯域を下げる |
 | ゴースト強度 / 遅延 | 検波前 | 遅れて届いた反射波による多重像。Y/C 分離前なので色にじみを伴う。遅延を**負**にすると先行ゴースト |
 | 干渉ビート 強度 / 周波数 | エンコード | 流れる斜め縞。3.58MHz 付近では虹色のクロスカラー |
 | 垂直ロール速度 / 帰線帯 | 表示 | 画面が上下に流れ、継ぎ目に黒い帯（V-Hold 不良） |
 | 水平同期ジッタ | 表示 | 行ごとに横へ揺れ、左端がギザギザに |
+| 一時発動の長さ | — | 発動が収まるまでの秒数 |
+
+**グリッチ（再生不良の演出）** — デッキとテープ側の不調
+
+| 項目 | 差し込む段 | 見え方 |
+|---|---|---|
+| リンギング | エンコード | 映像アンプの共振。縦エッジの**右側だけ**に波状の残響。強くしたいときは映像帯域を下げる |
 | フラッギング | 表示 | 画面**上部だけ**が横に曲がる（VTR の定番） |
 | ヘッドスイッチング | 検波前＋表示 | 画面**下部**数ラインが千切れ、RF が途切れてノイズ帯になる（VHS） |
 | ドロップアウト / 補償 | 検波前 | コンポジット信号そのものを時間軸で欠落させる。長いものは次のラインへ折り返し、ノイズ帯＋直後の横ずれに。色が落ちるのは Y/C 分離の自然な結果。補償は なし / グレー / 1H遅延線 |
 | テープ傷 / 位置 / 移動速度 | 検波前 | 折れ・縦傷による永久欠陥の横線。太さと縦位置を指定でき、移動速度を与えると帯がゆっくり画面を這う |
+| テープ傷が1画面動く時間 | — | 一時発動でテープ傷が画面を1周する秒数。発動もこの長さだけ続く |
 
-**一時発動**: ドックの「**グリッチ発動！**」ボタン、または 設定 → ホットキー の
-「**コンポジットTV: グリッチ発動**」で、数百 ms だけ一気に暴れて自然に収まります
-（長さは「一時発動の長さ」で調整）。グループが OFF でもボタンだけは効きます。
+**一時発動**: ドックの「**受信不良**」「**再生不良**」ボタン、または 設定 → ホットキー の
+対応する項目で、それぞれのグループだけが一気に暴れて自然に収まります。**グループが OFF でも
+ボタンは効きます**。再生不良の発動では、テープ傷が指定秒数で画面を 1 周します。
 
 **おすすめの組み合わせ**
 
@@ -190,7 +200,8 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 | 表示名 | 内部名 | 動作 |
 |---|---|---|
 | コンポジットTV: 電源 ON/OFF | `composite_tv.power` | 電源トグル（起動・シャットダウンのアニメーション付き） |
-| コンポジットTV: グリッチ発動 | `composite_tv.glitch` | 数百 ms のグリッチバースト |
+| コンポジットTV: 受信不良グリッチ発動 | `composite_tv.glitch` | 受信側のグリッチバースト |
+| コンポジットTV: 再生不良グリッチ発動 | `composite_tv.playback` | テープ側のグリッチバースト（傷が画面を1周） |
 | コンポジットTV: 消磁 | `composite_tv.degauss` | 消磁（映像側） |
 | コンポジットTV: 電源 ON/OFF ※音声フィルタ側 | `composite_tv_audio.power` | 電源トグル（音声側） |
 | コンポジットTV: 消磁 ※音声フィルタ側 | `composite_tv_audio.degauss` | 消磁音 |
@@ -217,7 +228,7 @@ OBS 28 以降に内蔵の obs-websocket (5.x) から、ホットキーを名前�
 }
 ```
 
-`hotkeyName` は上の表の内部名（`composite_tv.power` / `composite_tv.glitch` /
+`hotkeyName` は上の表の内部名（`composite_tv.power` / `composite_tv.glitch` / `composite_tv.playback` /
 `composite_tv.degauss` / `composite_tv_audio.power` / `composite_tv_audio.degauss`）。
 ホットキーはフィルタを付けたソースごとに登録されるので、複数のソースで使っている
 場合は `contextName` のソース名で対象を選びます。
@@ -238,7 +249,7 @@ OBS 28 以降に内蔵の obs-websocket (5.x) から、ホットキーを名前�
 ```
 
 設定キーは保存済みシーンコレクション（JSON）や [docs/parameters.md](docs/parameters.md) で
-確認できます。グリッチ／消磁をこの経路で発動したいときは、`glitch_pulse` /
+確認できます。グリッチ／消磁をこの経路で発動したいときは、`glitch_pulse` / `playback_pulse` /
 `degauss_pulse` に**前回と違う整数**を書き込むと 1 回発火します（ドックと同じ仕組み）。
 
 ### 試すと分かりやすい設定
@@ -335,7 +346,7 @@ Switch on the **Glitches** group for reception faults injected at the physically
 stage: multipath **ghosting** (before Y/C separation, so it smears colour; a negative delay
 gives a leading ghost), an **interference beat** (herringbone plus rainbow cross-colour),
 **vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
-bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Glitch!** button
+bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Reception** and **Playback** buttons
 and the *Composite TV: trigger glitch* hotkey fire a momentary burst that settles on its own.
 
 ### Degauss
@@ -362,7 +373,8 @@ attached to (each filtered source gets its own bindings):
 | Display name | Internal name | Action |
 |---|---|---|
 | Composite TV: toggle power | `composite_tv.power` | Power toggle (with the warm-up / shutdown animation) |
-| Composite TV: trigger glitch | `composite_tv.glitch` | Momentary glitch burst (a few hundred ms) |
+| Composite TV: trigger reception glitch | `composite_tv.glitch` | Burst of reception faults |
+| Composite TV: trigger playback glitch | `composite_tv.playback` | Burst of tape faults (the damage crosses the picture once) |
 | Composite TV: degauss | `composite_tv.degauss` | Degauss (video side) |
 | Composite TV: toggle power — audio filter | `composite_tv_audio.power` | Power toggle (audio side) |
 | Composite TV: degauss — audio filter | `composite_tv_audio.degauss` | Degauss thump |
@@ -391,7 +403,7 @@ when filtering a scene); it needs obs-websocket 5.4 / OBS 30.2 or later.
 ```
 
 `hotkeyName` is an internal name from the table above (`composite_tv.power` /
-`composite_tv.glitch` / `composite_tv.degauss` / `composite_tv_audio.power` /
+`composite_tv.glitch` / `composite_tv.playback` / `composite_tv.degauss` / `composite_tv_audio.power` /
 `composite_tv_audio.degauss`). Hotkeys are registered per filtered source, so when
 several sources carry the filter, `contextName` picks which one fires.
 
@@ -412,7 +424,7 @@ such as field strength — use `SetSourceFilterSettings` (`sourceName` is again 
 
 Setting keys can be found in a saved scene collection (JSON) or in
 [docs/parameters.md](docs/parameters.md). To fire the glitch / degauss this way,
-write **an integer different from the last one** to `glitch_pulse` / `degauss_pulse`
+write **an integer different from the last one** to `glitch_pulse` / `playback_pulse` / `degauss_pulse`
 and it triggers once (the same mechanism the dock uses).
 
 ### License
