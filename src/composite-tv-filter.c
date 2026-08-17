@@ -136,12 +136,14 @@ struct composite_tv {
 	int dropout_mode; /* 0 none, 1 grey restorer, 2 1H delay line */
 	float tape_damage;
 	float tape_damage_pos;
+	float damage_speed;
 	float beat_gain;
 	float beat_norm;
 	float burst_len;
 
 	/* glitch animation state */
 	double v_roll_pos;
+	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
 	float burst;          /* 1 -> 0 momentary glitch envelope */
 	long long glitch_pulse; /* bumped by the dock to fire a burst */
@@ -395,6 +397,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
 	f->tape_damage = glitch ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
 	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
+	f->damage_speed = glitch ? (float)obs_data_get_double(s, "tape_damage_drift") : 0.0f;
 	f->beat_gain = glitch ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
@@ -760,7 +763,8 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * line periods of signal it takes out, so 0.5 is a whole line and
 	 * anything past that wraps onto the rows below. */
 	set_f(e, "damage_len", f->tape_damage * 2.0f);
-	set_f(e, "damage_line", floorf(f->tape_damage_pos * (float)(FIELD_H - 1)));
+	double dpos = (double)f->tape_damage_pos + f->damage_pos;
+	set_f(e, "damage_line", floorf((float)(dpos - floor(dpos)) * (float)(FIELD_H - 1)));
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;
@@ -834,6 +838,20 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
 		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
+	/* A crease is at a fixed place on the tape, not on the screen. Whether it
+	 * lands on the same lines twice depends on the tape keeping step with the
+	 * drum, and it does not quite, so the damaged band crawls through the
+	 * picture - which is what a creased tape actually looks like. The burst
+	 * drives it along the same way it drives the vertical hold, and zeroing
+	 * the speed hands the band back to its own slider. */
+	float damage_speed = f->damage_speed + f->burst * 3.0f;
+	if (damage_speed != 0.0f) {
+		double p = f->damage_pos + (double)damage_speed * dt;
+		f->damage_pos = p - floor(p);
+	} else {
+		f->damage_pos = 0.0;
+	}
+
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
@@ -983,6 +1001,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_DROPOUT_MODE 0
 #define DEF_TAPE_DAMAGE 0.0
 #define DEF_TAPE_DAMAGE_POS 0.5
+#define DEF_TAPE_DAMAGE_DRIFT 0.0
 #define DEF_BEAT_GAIN 0.0
 #define DEF_BEAT_FREQ 2.5
 #define DEF_BURST_LEN 0.4
@@ -1122,6 +1141,8 @@ static obs_properties_t *ntsc_get_properties(void *data)
 			     DEF_TAPE_DAMAGE);
 	ctv_add_float_slider(g, "tape_damage_pos", obs_module_text("CompositeTV.TapeDamagePos"), 0.0, 1.0, 0.01,
 			     DEF_TAPE_DAMAGE_POS);
+	ctv_add_float_slider(g, "tape_damage_drift", obs_module_text("CompositeTV.TapeDamageDrift"), -2.0, 2.0, 0.01,
+			     DEF_TAPE_DAMAGE_DRIFT);
 	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
 	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
@@ -1192,6 +1213,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_int(s, "dropout_mode", DEF_DROPOUT_MODE);
 	obs_data_set_default_double(s, "tape_damage", DEF_TAPE_DAMAGE);
 	obs_data_set_default_double(s, "tape_damage_pos", DEF_TAPE_DAMAGE_POS);
+	obs_data_set_default_double(s, "tape_damage_drift", DEF_TAPE_DAMAGE_DRIFT);
 	obs_data_set_default_double(s, "beat_gain", DEF_BEAT_GAIN);
 	obs_data_set_default_double(s, "beat_freq", DEF_BEAT_FREQ);
 	obs_data_set_default_double(s, "burst_len", DEF_BURST_LEN);
