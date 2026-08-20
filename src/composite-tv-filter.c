@@ -222,7 +222,8 @@ struct composite_tv {
 	/* receiver tracking: per-row sync/burst measurements and the AFC */
 	int color_killer_mode; /* 0 auto (burst-driven), 1 off, 2 forced mono */
 	gs_texrender_t *track;
-	gs_texrender_t *flywheel;
+	gs_texrender_t *flywheel[2]; /* ping-pong: the oscillator state carries across fields */
+	int fly_idx;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -749,7 +750,8 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->display[1]);
 	free_texrender(&f->pack);
 	free_texrender(&f->track);
-	free_texrender(&f->flywheel);
+	free_texrender(&f->flywheel[0]);
+	free_texrender(&f->flywheel[1]);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -1296,9 +1298,18 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * error, and everything the decoder and the tube know about timing and
 	 * colour lock now comes from here rather than from the encoder. */
 	ensure_tr(&f->track, GS_RGBA32F);
-	ensure_tr(&f->flywheel, GS_RGBA32F);
+	ensure_tr(&f->flywheel[0], GS_RGBA32F);
+	ensure_tr(&f->flywheel[1], GS_RGBA32F);
 	gs_texture_t *trk = det ? run_pass(f, e, f->track, SIG_H, 1, "Track", det, cx, cy) : NULL;
-	gs_texture_t *fly = trk ? run_pass(f, e, f->flywheel, SIG_H, 1, "Flywheel", trk, cx, cy) : NULL;
+	/* The line oscillator's state continues across fields: last field's
+	 * output seeds this field's recurrence, ping-pong style. On the very
+	 * first frame there is no history and the seed is whatever gets read
+	 * from the fallback texture - the loop pulls itself in within a field,
+	 * exactly like a set warming up. */
+	gs_texture_t *fly_prev = gs_texrender_get_texture(f->flywheel[1 - f->fly_idx]);
+	set_tex(e, "flywheel_prev", fly_prev ? fly_prev : input_tex);
+	gs_texture_t *fly = trk ? run_pass(f, e, f->flywheel[f->fly_idx], SIG_H, 1, "Flywheel", trk, cx, cy) : NULL;
+	f->fly_idx ^= 1;
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
