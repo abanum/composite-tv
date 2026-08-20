@@ -28,6 +28,13 @@ uniform float scope_on;
 uniform float scope_line;         // field row to trace
 uniform float scope_top;          // 1: draw the panel at the top instead
 
+// Signal output (Pack): header-row metadata for the outside decoder
+uniform float pack_format;        // 1: 16-bit R+G, 2: 8-bit grayscale
+uniform float pack_tap;           // 0: encoder output, 1: detector output
+uniform float pack_field;         // field number, 0..3
+uniform float pack_aud_count;     // audio samples carried by this field
+uniform float pack_aud_present;   // 1: the FM sound carrier is on
+
 uniform float2 field_size;        // (active samples per ln, active lines per field)
 uniform float2 output_size;       // (cx, cy) of the rendered output
 
@@ -182,6 +189,7 @@ uniform float flash;              // discharge flash amount
 #define EQ_W 33                   /* equalizing pulse, 2.3us */
 #define SYNC_LEVEL (-0.4)         /* -40 IRE; blanking = 0, peak white = 1 */
 #define BURST_AMP 0.2             /* +/-20 IRE */
+#define PACK_H 264                /* signal rows plus one header row at the bottom */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -1170,6 +1178,58 @@ float4 PSDisplay(VertData v) : TARGET
 	return float4(outCol, 1.0);
 }
 
+//============================================================================
+// Pack : signal output for an outside decoder
+//============================================================================
+
+// Repacks a signal raster (encoder or detector output, chosen on the CPU by
+// what gets bound as image) into a byte-exact frame for export: 263 signal
+// rows in the storage encoding, plus one header row of metadata at the
+// bottom. 16-bit mode splits round(stored * 65535) into R = high byte and
+// G = low byte; B and A are reserved. 8-bit mode puts the high byte on all
+// three channels instead, which reads as an ordinary grayscale picture of
+// the signal - sync columns, burst, subcarrier stripes - for eyeballing.
+float4 PSPack(VertData v) : TARGET
+{
+	int px = (int)floor(v.uv.x * (float)SIG_W);
+	int py = (int)floor(v.uv.y * (float)PACK_H);
+
+	float v16;
+	if (py < SIG_H) {
+		// Signal rows pass the storage encoding through untouched; the
+		// receiver undoes it with composite = (v/65535 - 0.5) / 0.375.
+		float2 uv = float2(((float)px + 0.5) / (float)SIG_W, ((float)py + 0.5) / (float)SIG_H);
+		v16 = image.Sample(pointClamp, uv).r;
+	} else {
+		// Header row, 16-bit values whatever the picture format:
+		// magic, version, format, tap, field number, audio sample count,
+		// audio present. The rest is zero.
+		float hv = 0.0;
+		if (px == 0)
+			hv = 17236.0; /* 0x4354, "CT" */
+		else if (px == 1)
+			hv = 1.0;     /* header version */
+		else if (px == 2)
+			hv = pack_format;
+		else if (px == 3)
+			hv = pack_tap;
+		else if (px == 4)
+			hv = pack_field;
+		else if (px == 5)
+			hv = pack_aud_count;
+		else if (px == 6)
+			hv = pack_aud_present;
+		v16 = hv / 65535.0;
+	}
+
+	float q = floor(saturate(v16) * 65535.0 + 0.5);
+	float hi = floor(q / 256.0);
+	float lo = q - hi * 256.0;
+	if (pack_format > 1.5)
+		return float4(hi / 255.0, hi / 255.0, hi / 255.0, 1.0);
+	return float4(hi / 255.0, lo / 255.0, 0.0, 1.0);
+}
+
 // The final blit to the filter output uses libobs' own default effect, so
 // there is no passthrough technique here.
 
@@ -1206,5 +1266,14 @@ technique Display
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSDisplay(v);
+	}
+}
+
+technique Pack
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSPack(v);
 	}
 }

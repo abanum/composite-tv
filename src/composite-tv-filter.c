@@ -51,6 +51,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #define SIG_H 263
 #define SIG_VBI_ROWS 20
 #define LINE_PERIOD_US (SIG_W * 1.0e6 / SAMPLE_RATE_HZ) /* 63.556 */
+#define PACK_H 264 /* signal rows plus one header row for the outside decoder */
 #define BURST_PHASE_RAD (57.0 * NS_PI / 180.0)
 #define CHROMA_DEMOD_LPF_HZ 600000.0
 /* Settings are in MHz; the shader wants cutoffs normalised to the sample rate. */
@@ -192,12 +193,18 @@ struct composite_tv {
 	float aud_ring[AUD_RING_LEN];
 	uint64_t aud_write; /* absolute sample counters; masked on access */
 	uint64_t aud_read;
-	double fm_phase;  /* carrier phase, continuous across fields */
-	double aud_need;  /* fractional samples owed to the next field */
-	float pre_x1;     /* pre-emphasis differentiator state */
-	float audio_gain; /* carrier amplitude in video units, 0 = off */
+	double fm_phase;          /* carrier phase, continuous across fields */
+	double aud_need;          /* fractional samples owed to the next field */
+	float pre_x1;             /* pre-emphasis differentiator state */
+	float audio_gain;         /* carrier amplitude in video units, 0 = off */
+	uint32_t aud_field_count; /* audio samples carried by this field */
 	gs_texture_t *audio_tex;
 	float *audio_buf;
+
+	/* signal output for an outside decoder */
+	int signal_format; /* 0 off, 1 16-bit R+G, 2 8-bit grayscale */
+	int signal_tap;    /* 0 encoder output, 1 detector output */
+	gs_texrender_t *pack;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -507,6 +514,9 @@ static void ntsc_update(void *data, obs_data_t *s)
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
 	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
+	f->signal_format = (int)obs_data_get_int(s, "signal_format");
+	f->signal_tap = (int)obs_data_get_int(s, "signal_tap");
+
 	/* FM sound carrier: (re)tap the chosen source. The weak reference makes
 	 * deletion safe; a source recreated under the same name is picked up on
 	 * the next settings change, because the expiry check runs here too. */
@@ -709,6 +719,7 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->field[1]);
 	free_texrender(&f->display[0]);
 	free_texrender(&f->display[1]);
+	free_texrender(&f->pack);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -805,6 +816,13 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)) + (float)SIG_VBI_ROWS);
 	/* Trace a line in the lower half and the panel moves out of its way. */
 	set_f(e, "scope_top", f->scope_line >= 241.0f ? 1.0f : 0.0f);
+
+	/* Signal output header metadata. */
+	set_f(e, "pack_format", (float)f->signal_format);
+	set_f(e, "pack_tap", (float)f->signal_tap);
+	set_f(e, "pack_field", (float)(f->field_counter & 3u));
+	set_f(e, "pack_aud_count", (float)f->aud_field_count);
+	set_f(e, "pack_aud_present", f->audio_gain > 0.0f ? 1.0f : 0.0f);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
 	set_f(e, "input_aspect", (float)cx / (float)cy);
 	float scr_aspect = (f->screen_aspect == 1)   ? (4.0f / 3.0f)
@@ -936,6 +954,29 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "flash", g.flash);
 }
 
+/* In signal-output mode the filter's own output IS the 910x264 packed raster,
+ * so the reported size must say so - that is what keeps a Spout Filter (or
+ * anything else grabbing the filter output) pixel-for-pixel. In normal mode,
+ * report the target's size: once these callbacks exist, libobs consults them
+ * for an enabled filter instead of recursing to the target by itself. */
+static uint32_t ntsc_width(void *data)
+{
+	struct composite_tv *f = data;
+	if (f->signal_format != 0)
+		return SIG_W;
+	obs_source_t *target = obs_filter_get_target(f->source);
+	return target ? obs_source_get_base_width(target) : 0;
+}
+
+static uint32_t ntsc_height(void *data)
+{
+	struct composite_tv *f = data;
+	if (f->signal_format != 0)
+		return PACK_H;
+	obs_source_t *target = obs_filter_get_target(f->source);
+	return target ? obs_source_get_base_height(target) : 0;
+}
+
 /* Synthesize one field of the FM sound carrier into audio_tex. FM has memory,
  * so this is the one thing the shaders cannot do: the phase is the running
  * integral of the audio. One sincos per audio sample sets a rotor, and the
@@ -1009,6 +1050,7 @@ static void ntsc_synth_carrier(struct composite_tv *f)
 	}
 
 	gs_texture_set_image(f->audio_tex, (const uint8_t *)dst, SIG_W * sizeof(float), false);
+	f->aud_field_count = need;
 }
 
 static void ntsc_render(void *data, gs_effect_t *unused)
@@ -1114,8 +1156,10 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	target_end(f->input);
 	gs_texture_t *input_tex = gs_texrender_get_texture(f->input);
 
-	ensure_tr(&f->composite, GS_RGBA16F);
-	ensure_tr(&f->detector, GS_RGBA16F);
+	/* The two signal rasters run at full float: half precision only carries
+	 * ~11 significant bits, which the 16-bit signal export would expose. */
+	ensure_tr(&f->composite, GS_RGBA32F);
+	ensure_tr(&f->detector, GS_RGBA32F);
 	ensure_tr(&f->field[0], GS_RGBA16F);
 	ensure_tr(&f->field[1], GS_RGBA16F);
 	ensure_tr(&f->display[0], GS_RGBA);
@@ -1133,6 +1177,23 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 
 	gs_texture_t *comp = run_pass(f, e, f->composite, SIG_W, SIG_H, "Encode", input_tex, cx, cy);
 	gs_texture_t *det = run_pass(f, e, f->detector, SIG_W, SIG_H, "Detect", comp, cx, cy);
+
+	/* Signal output: hand the chosen raster to an outside decoder instead of
+	 * showing the tube. The TV side - Decode, Display, power envelope - is
+	 * skipped entirely: a deck does not care whether the set is even on. */
+	if (f->signal_format != 0) {
+		ensure_tr(&f->pack, GS_RGBA);
+		gs_texture_t *tap = (f->signal_tap == 1 && det) ? det : comp;
+		gs_texture_t *packed = tap ? run_pass(f, e, f->pack, SIG_W, PACK_H, "Pack", tap, cx, cy) : NULL;
+		if (packed) {
+			gs_effect_t *blit = obs_get_base_effect(OBS_EFFECT_DEFAULT);
+			set_tex(blit, "image", packed);
+			while (gs_effect_loop(blit, "Draw"))
+				gs_draw_sprite(packed, 0, SIG_W, PACK_H);
+		}
+		return;
+	}
+
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
@@ -1172,6 +1233,18 @@ static void ntsc_render(void *data, gs_effect_t *unused)
  * dialog closes. The inspection zoom is a tool, not a look, so wind it back
  * rather than leave a magnified picture going out live. A weak reference keeps
  * this safe if the filter itself was removed while the dialog was open. */
+/* List every source that produces audio, for the FM carrier picker. */
+static bool add_audio_source(void *param, obs_source_t *src)
+{
+	obs_property_t *prop = param;
+	if (obs_source_get_output_flags(src) & OBS_SOURCE_AUDIO) {
+		const char *name = obs_source_get_name(src);
+		if (name && *name)
+			obs_property_list_add_string(prop, name, name);
+	}
+	return true;
+}
+
 static void ntsc_props_destroyed(void *param)
 {
 	obs_weak_source_t *weak = param;
@@ -1224,6 +1297,11 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_PREVIEW_ZOOM 1.0
 #define DEF_SCOPE_ON false
 #define DEF_SCOPE_LINE 240.0
+#define DEF_SIGNAL_FORMAT 0
+#define DEF_SIGNAL_TAP 0
+/* Off by default: the carrier is real signal content - with no 4.5 MHz trap
+ * in the decoder it shows as fine dots - so it must never appear unasked. */
+#define DEF_AUDIO_CARRIER_GAIN 0.0
 #define DEF_ZOOM_X 0.5
 #define DEF_ZOOM_Y 0.5
 #define DEF_MASK_TYPE 0
@@ -1405,6 +1483,31 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_tip_note(sw, obs_module_text("CompositeTV.SweepSec.Tip"));
 	obs_properties_add_group(p, "playback_enable", obs_module_text("CompositeTV.Playback"), OBS_GROUP_CHECKABLE, tp);
 
+	/* --- signal output, for feeding an outside decoder --- */
+	obs_properties_t *so = obs_properties_create();
+	obs_property_t *sfm = obs_properties_add_list(so, "signal_format", obs_module_text("CompositeTV.SignalFormat"),
+						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(sfm, obs_module_text("CompositeTV.SignalFormat.Off"), 0);
+	obs_property_list_add_int(sfm, obs_module_text("CompositeTV.SignalFormat.Pack16"), 1);
+	obs_property_list_add_int(sfm, obs_module_text("CompositeTV.SignalFormat.Gray8"), 2);
+	ctv_set_list_default_tip(sfm, DEF_SIGNAL_FORMAT);
+	obs_property_t *stp = obs_properties_add_list(so, "signal_tap", obs_module_text("CompositeTV.SignalTap"),
+						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(stp, obs_module_text("CompositeTV.SignalTap.Deck"), 0);
+	obs_property_list_add_int(stp, obs_module_text("CompositeTV.SignalTap.Det"), 1);
+	ctv_set_list_default_tip(stp, DEF_SIGNAL_TAP);
+	obs_property_t *cas = obs_properties_add_list(so, "carrier_audio_source",
+						      obs_module_text("CompositeTV.CarrierAudioSource"),
+						      OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(cas, obs_module_text("CompositeTV.CarrierAudio.None"), "");
+	obs_enum_sources(add_audio_source, cas);
+	obs_property_t *acg = ctv_add_float_slider(so, "audio_carrier_gain",
+						   obs_module_text("CompositeTV.AudioCarrierGain"), 0.0, 0.3, 0.01,
+						   DEF_AUDIO_CARRIER_GAIN);
+	ctv_add_tip_note(acg, obs_module_text("CompositeTV.AudioCarrierGain.Tip"));
+	obs_properties_add_text(so, "signal_hint", obs_module_text("CompositeTV.Signal.Hint"), OBS_TEXT_INFO);
+	obs_properties_add_group(p, "signal_group", obs_module_text("CompositeTV.Signal"), OBS_GROUP_NORMAL, so);
+
 	/* --- debug, last so it stays out of the way --- */
 	obs_property_t *sc = ctv_add_bool(p, "scope_on", obs_module_text("CompositeTV.Scope"), DEF_SCOPE_ON);
 	ctv_add_tip_note(sc, obs_module_text("CompositeTV.Scope.Tip"));
@@ -1449,6 +1552,10 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "degauss_strength", DEF_DEGAUSS_STRENGTH);
 	obs_data_set_default_bool(s, "scope_on", DEF_SCOPE_ON);
 	obs_data_set_default_double(s, "scope_line", DEF_SCOPE_LINE);
+	obs_data_set_default_int(s, "signal_format", DEF_SIGNAL_FORMAT);
+	obs_data_set_default_int(s, "signal_tap", DEF_SIGNAL_TAP);
+	obs_data_set_default_string(s, "carrier_audio_source", "");
+	obs_data_set_default_double(s, "audio_carrier_gain", DEF_AUDIO_CARRIER_GAIN);
 	obs_data_set_default_double(s, "preview_zoom", DEF_PREVIEW_ZOOM);
 	obs_data_set_default_double(s, "zoom_x", DEF_ZOOM_X);
 	obs_data_set_default_double(s, "zoom_y", DEF_ZOOM_Y);
@@ -1487,6 +1594,8 @@ struct obs_source_info composite_tv_filter_info = {
 	.destroy = ntsc_destroy,
 	.update = ntsc_update,
 	.video_render = ntsc_render,
+	.get_width = ntsc_width,
+	.get_height = ntsc_height,
 	.get_properties = ntsc_get_properties,
 	.get_defaults = ntsc_defaults,
 	.filter_add = ntsc_filter_add,
