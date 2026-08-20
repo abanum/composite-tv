@@ -45,7 +45,8 @@ endif()
 
 target_sources(
   ${CMAKE_PROJECT_NAME}
-  PRIVATE src/plugin-main.c src/composite-tv-filter.c src/composite-tv-audio.c src/composite-tv-dock.cpp
+  PRIVATE src/plugin-main.c src/composite-tv-filter.c src/composite-tv-audio.c src/composite-tv-signal.c
+          src/composite-tv-dock.cpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

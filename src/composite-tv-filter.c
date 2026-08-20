@@ -20,6 +20,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 
 #include "composite-tv-filter.h"
+#include "composite-tv-signal.h"
 #include "composite-tv-props.h"
 
 #include <obs-module.h>
@@ -707,8 +708,12 @@ static void ntsc_destroy(void *data)
 	struct composite_tv *f = data;
 	ntsc_unregister_hotkeys(f);
 	/* Detach before tearing anything down: after this the audio thread can
-	 * no longer walk into the ring or the mutex. */
+	 * no longer walk into the ring or the mutex, and no signal source can
+	 * find the pack texture any more. Freeing the textures below happens
+	 * inside obs_enter_graphics(), which cannot interleave with a render
+	 * that already picked the pointer up. */
 	ntsc_detach_audio(f);
+	ctv_signal_unpublish(f);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);
@@ -817,8 +822,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* Trace a line in the lower half and the panel moves out of its way. */
 	set_f(e, "scope_top", f->scope_line >= 241.0f ? 1.0f : 0.0f);
 
-	/* Signal output header metadata. */
-	set_f(e, "pack_format", (float)f->signal_format);
+	/* Signal output header metadata. The format the header reports is the
+	 * one actually packed: with the display mode on "none" the published
+	 * raster is still 16-bit, so the header must say 1, not 0. */
+	set_f(e, "pack_format", (float)(f->signal_format == 0 ? 1 : f->signal_format));
 	set_f(e, "pack_tap", (float)f->signal_tap);
 	set_f(e, "pack_field", (float)(f->field_counter & 3u));
 	set_f(e, "pack_aud_count", (float)f->aud_field_count);
@@ -1178,13 +1185,21 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	gs_texture_t *comp = run_pass(f, e, f->composite, SIG_W, SIG_H, "Encode", input_tex, cx, cy);
 	gs_texture_t *det = run_pass(f, e, f->detector, SIG_W, SIG_H, "Detect", comp, cx, cy);
 
-	/* Signal output: hand the chosen raster to an outside decoder instead of
-	 * showing the tube. The TV side - Decode, Display, power envelope - is
-	 * skipped entirely: a deck does not care whether the set is even on. */
+	/* The packed raster is produced every frame, whatever the display mode,
+	 * and published for the companion signal source: that is what lets one
+	 * filter instance show the CRT picture and feed an outside decoder at
+	 * the same time, with a single set of settings. The pass is 910x264 -
+	 * a rounding error next to the display pass. */
+	ensure_tr(&f->pack, GS_RGBA);
+	gs_texture_t *tap = (f->signal_tap == 1 && det) ? det : comp;
+	gs_texture_t *packed = tap ? run_pass(f, e, f->pack, SIG_W, PACK_H, "Pack", tap, cx, cy) : NULL;
+	if (packed)
+		ctv_signal_publish(f, f->source, packed);
+
+	/* Signal output mode: the filter's own output becomes the raster and
+	 * the TV side - Decode, Display, power envelope - is skipped entirely:
+	 * a deck does not care whether the set is even on. */
 	if (f->signal_format != 0) {
-		ensure_tr(&f->pack, GS_RGBA);
-		gs_texture_t *tap = (f->signal_tap == 1 && det) ? det : comp;
-		gs_texture_t *packed = tap ? run_pass(f, e, f->pack, SIG_W, PACK_H, "Pack", tap, cx, cy) : NULL;
 		if (packed) {
 			gs_effect_t *blit = obs_get_base_effect(OBS_EFFECT_DEFAULT);
 			set_tex(blit, "image", packed);

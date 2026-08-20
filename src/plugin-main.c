@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include "composite-tv-filter.h"
 #include "composite-tv-audio.h"
+#include "composite-tv-signal.h"
 #include "composite-tv-dock.h"
 
 OBS_DECLARE_MODULE()
@@ -28,8 +29,10 @@ OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 bool obs_module_load(void)
 {
+	ctv_signal_registry_init();
 	obs_register_source(&composite_tv_filter_info);
 	obs_register_source(&composite_tv_audio_filter_info);
+	obs_register_source(&composite_tv_signal_info);
 	composite_tv_dock_register();
 	obs_log(LOG_INFO, "loaded (version %s)", PLUGIN_VERSION);
 	return true;
@@ -38,5 +41,6 @@ bool obs_module_load(void)
 void obs_module_unload(void)
 {
 	composite_tv_dock_unregister();
+	ctv_signal_registry_free();
 	obs_log(LOG_INFO, "plugin unloaded");
 }
