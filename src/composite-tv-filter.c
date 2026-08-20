@@ -175,6 +175,9 @@ struct composite_tv {
 	double flag_phase2;
 	double afc_phase1; /* wander of the line oscillator's free-run error */
 	double afc_phase2;
+	float fading;       /* depth of the propagation fade */
+	double fade_phase1; /* its two slow oscillators */
+	double fade_phase2;
 	float burst_rx;           /* 1 -> 0 reception burst */
 	float burst_pb;           /* 1 -> 0 playback burst */
 	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
@@ -512,6 +515,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->ghost_delay = rx ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
 	f->v_roll_speed = rx ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
 	f->h_jitter = rx ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
+	f->fading = rx ? (float)obs_data_get_double(s, "fading") : 0.0f;
 	f->beat_gain = rx ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
@@ -855,13 +859,23 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
 	set_f(e, "if_cutoff", f->if_cutoff);
-	set_f(e, "field_strength", f->field_strength);
+	/* Fading: the propagation path breathes, so the strength the receiver
+	 * actually gets dips below the set value on two very slow sines - the
+	 * E-skip / tropo rise-and-fall. Everything downstream reacts on its own:
+	 * the snow breathes, colour drops in and out at the killer threshold,
+	 * and the horizontal lock swims whenever a dip crosses the margin. */
+	float fs_eff = f->field_strength;
+	if (f->fading > 0.0f) {
+		float fw = 0.6f * (float)sin(f->fade_phase1) + 0.4f * (float)sin(f->fade_phase2);
+		fs_eff *= clampf(1.0f - f->fading * (0.5f + 0.5f * fw), 0.0f, 1.0f);
+	}
+	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
-	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * f->field_strength);
-	set_f(e, "det_blend", smoothstepf(0.0f, 0.35f, f->field_strength));
+	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
+	set_f(e, "det_blend", smoothstepf(0.0f, 0.35f, fs_eff));
 	/* Decode. The free-running oscillator only rotates the hue in the
 	 * no-signal limit - with a picture the receiver locks to the burst. */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
@@ -1178,6 +1192,10 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * warm resistor here, a cold capacitor there. */
 	f->afc_phase1 = fmod(f->afc_phase1 + 2.0 * NS_PI * 0.043 * dt, 2.0 * NS_PI);
 	f->afc_phase2 = fmod(f->afc_phase2 + 2.0 * NS_PI * 0.013 * dt, 2.0 * NS_PI);
+	/* Propagation fading: E-skip and tropo breathe on seconds-to-tens-of-
+	 * seconds scales. */
+	f->fade_phase1 = fmod(f->fade_phase1 + 2.0 * NS_PI * 0.09 * dt, 2.0 * NS_PI);
+	f->fade_phase2 = fmod(f->fade_phase2 + 2.0 * NS_PI * 0.027 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
 	if (f->degauss > 0.0f) {
@@ -1384,6 +1402,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_GHOST_DELAY 24.0
 #define DEF_V_ROLL_SPEED 0.0
 #define DEF_H_JITTER 0.0
+#define DEF_FADING 0.0
 #define DEF_FLAGGING 0.0
 #define DEF_FLAG_WAVE 0.0
 #define DEF_HEAD_SWITCH 0.0
@@ -1522,6 +1541,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
 			     DEF_V_ROLL_SPEED);
 	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
+	obs_property_t *fd =
+		ctv_add_float_slider(g, "fading", obs_module_text("CompositeTV.Fading"), 0.0, 1.0, 0.01, DEF_FADING);
+	ctv_add_tip_note(fd, obs_module_text("CompositeTV.Fading.Tip"));
 	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
 	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
@@ -1643,6 +1665,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
 	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
 	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
+	obs_data_set_default_double(s, "fading", DEF_FADING);
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
 	obs_data_set_default_double(s, "flag_wave", DEF_FLAG_WAVE);
 	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
