@@ -31,6 +31,14 @@ WebGL2 アプリ **[NTSC Snow Simulator](https://github.com/abanum/ZAA)**（MIT�
 進む性質を利用しています。副搬送波位相を絶対サンプル位置と 4 フィールドシーケンスから
 積算するため、ドットクロールとクロスカラーがアーティファクトとして自然に発生します。
 
+内部の信号は**フルラインの NTSC ラスタ**（910 サンプル/ライン × 263 行/フィールド）で、
+水平・垂直同期パルス、カラーバースト、VBI を実際に含みます。「信号出力」モードにすると
+このコンポジット信号そのものを 910×264 の画像としてフィルタ出力にでき、
+[obs-spout2-plugin](https://github.com/Off-World-Live/obs-spout2-plugin) の Spout Filter を
+直後に付けて**外部の NTSC デコーダへ 1:1 で渡せます**。指定した音声ソースを実機の規格どおり
+**4.5MHz の FM 搬送波**として信号に乗せることもできます（詳細は
+[docs/parameters.md](docs/parameters.md) の「信号出力」）。
+
 ## 導入方法
 
 ### ビルド（付属の CMake プリセット）
@@ -303,6 +311,15 @@ The receiver chain — **Encode** (RGB→YIQ→band-limit→3.58 MHz modulation)
 **Decode** (Y/C separation + synchronous demodulation), **Display** (interlaced CRT) — is
 reproduced rather than faked, so snow luminance is Rayleigh-distributed and a single
 *field strength* slider moves continuously from a clean picture to full static.
+
+The internal signal is the **full NTSC line raster** — 910 samples per line, 263 rows per
+field, with real horizontal/vertical sync, colour burst and VBI. A **signal output** mode
+turns the filter's own output into that raw composite as a 910×264 image; put
+[obs-spout2-plugin](https://github.com/Off-World-Live/obs-spout2-plugin)'s Spout Filter
+right after it to hand the signal to an outside NTSC decoder pixel-for-pixel, optionally
+with a chosen audio source riding on a standards-correct **4.5 MHz FM sound carrier**
+(16-bit R+G packing, or an 8-bit grayscale debug view; header row carries magic, field
+number and audio sample count).
 
 ### Build
 
