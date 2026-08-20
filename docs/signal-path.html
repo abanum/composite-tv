@@ -1,0 +1,472 @@
+<title>コンポジットTV 信号経路図</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #eef1ec;
+  --surface: #ffffff;
+  --surface2: #e4eae3;
+  --ink: #1c2b24;
+  --muted: #5c6f64;
+  --line: #c3cec5;
+  --accent: #177a45;
+  --cyan: #0e7a8a;
+  --warn: #96660f;
+  --warnbg: #f3e8cf;
+  --okbg: #ddeee2;
+  --tapbg: #dce9ec;
+  --shadow: 0 1px 3px rgba(28, 43, 36, .08);
+}
+:root:not([data-theme="light"]) {
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0c110e;
+    --surface: #121a15;
+    --surface2: #0e1611;
+    --ink: #dfe9e0;
+    --muted: #8ba394;
+    --line: #263329;
+    --accent: #46d47f;
+    --cyan: #56bccd;
+    --warn: #e0b055;
+    --warnbg: #2a2413;
+    --okbg: #13281b;
+    --tapbg: #12262b;
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c110e;
+  --surface: #121a15;
+  --surface2: #0e1611;
+  --ink: #dfe9e0;
+  --muted: #8ba394;
+  --line: #263329;
+  --accent: #46d47f;
+  --cyan: #56bccd;
+  --warn: #e0b055;
+  --warnbg: #2a2413;
+  --okbg: #13281b;
+  --tapbg: #12262b;
+  --shadow: none;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "IBM Plex Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.75;
+  margin: 0;
+  padding: 40px 20px 80px;
+}
+.wrap { max-width: 960px; margin: 0 auto; }
+header { margin-bottom: 8px; }
+.eyebrow {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  letter-spacing: .14em;
+  color: var(--accent);
+  text-transform: uppercase;
+}
+h1 {
+  font-size: 30px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 6px 0 4px;
+  text-wrap: balance;
+}
+.lede { color: var(--muted); max-width: 42em; margin: 0 0 12px; }
+h2 {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 56px 0 6px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  text-wrap: balance;
+}
+h2 .no {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  color: var(--accent);
+  margin-right: 10px;
+}
+p { max-width: 44em; }
+figure { margin: 20px 0; }
+figure svg { max-width: 100%; height: auto; display: block; }
+figcaption { font-size: 13px; color: var(--muted); margin-top: 8px; max-width: 44em; }
+.scroller { overflow-x: auto; }
+
+/* legend */
+.legend {
+  display: flex; flex-wrap: wrap; gap: 10px 22px;
+  font-size: 13px; color: var(--muted);
+  margin: 14px 0 4px;
+}
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.ok { background: var(--accent); }
+.dot.wa { background: var(--warn); }
+.dot.tap { background: var(--cyan); border-radius: 2px; }
+
+/* pipeline rail */
+.rail { margin-top: 22px; }
+.stage {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  box-shadow: var(--shadow);
+  padding: 18px 22px 16px;
+}
+.stage-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px;
+  margin-bottom: 2px;
+}
+.stage-head .pass {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .1em;
+  color: var(--accent);
+}
+.stage-head .gear { font-size: 17px; font-weight: 700; }
+.stage-head .role { font-size: 13px; color: var(--muted); }
+.inj {
+  list-style: none; margin: 10px 0 0; padding: 0;
+  display: grid; gap: 7px;
+}
+.inj li {
+  display: grid; grid-template-columns: 11px 1fr; gap: 10px;
+  align-items: baseline;
+  font-size: 14px;
+  padding-left: 2px;
+}
+.inj .dot { position: relative; top: 1px; }
+.inj b { font-weight: 500; }
+.inj .why { color: var(--muted); font-size: 13px; }
+.inj .p { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--muted); }
+
+/* signal strip between stages */
+.wire {
+  display: grid; grid-template-columns: 40px 1fr; gap: 0 14px;
+  padding: 2px 0 2px 22px;
+}
+.wire .stem {
+  position: relative;
+}
+.wire .stem::before {
+  content: ""; position: absolute; left: 50%; top: 0; bottom: 0;
+  width: 2px; background: var(--accent); transform: translateX(-50%);
+}
+.wire .stem::after {
+  content: ""; position: absolute; left: 50%; bottom: -1px;
+  transform: translateX(-50%);
+  border: 6px solid transparent; border-top: 8px solid var(--accent); border-bottom: 0;
+}
+.wire .fmt {
+  padding: 13px 0;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+  color: var(--cyan);
+}
+.wire .fmt .what { color: var(--ink); font-family: "IBM Plex Sans JP", sans-serif; font-size: 13px; }
+.wire .taps { font-size: 12.5px; color: var(--muted); font-family: "IBM Plex Sans JP", sans-serif; }
+.wire .taps .t { color: var(--cyan); font-weight: 500; }
+
+/* tables */
+table {
+  border-collapse: collapse; width: 100%;
+  font-size: 13.5px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; vertical-align: top; }
+th { background: var(--surface2); font-weight: 600; font-size: 12.5px; white-space: nowrap; }
+td.c { text-align: center; white-space: nowrap; }
+.chip {
+  display: inline-block; border-radius: 4px; padding: 1px 9px;
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+}
+.chip.ok { background: var(--okbg); color: var(--accent); }
+.chip.wa { background: var(--warnbg); color: var(--warn); }
+.chip.tp { background: var(--tapbg); color: var(--cyan); }
+td .why { display: block; color: var(--muted); font-size: 12.5px; }
+.mono { font-family: "IBM Plex Mono", monospace; font-size: .92em; }
+
+.note {
+  background: var(--surface2);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 6px 6px 0;
+  padding: 12px 18px;
+  font-size: 13.5px;
+  max-width: 46em;
+}
+@media (max-width: 640px) {
+  body { padding: 24px 12px 60px; }
+  .stage { padding: 14px 14px 12px; }
+  .wire { padding-left: 14px; }
+}
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">Composite TV — Signal Path Reference</div>
+  <h1>コンポジットTV 信号経路図</h1>
+  <p class="lede">キャプチャから送出までの全経路。各段が模している仮想機器、段間を流れる信号の形式、
+  そしてすべてのノイズ／グリッチの注入点とその物理的正当性。v1.0.5 + フルライン化・信号出力・時間軸誤差の信号化まで反映。</p>
+</header>
+
+<div class="legend">
+  <span><i class="dot ok"></i>物理的に正しい位置に注入</span>
+  <span><i class="dot wa"></i>実装上の近似（理由を明記）</span>
+  <span><i class="dot tap"></i>タップ（信号の取り出し点）</span>
+</div>
+
+<h2><span class="no">01</span>全体トポロジー</h2>
+<div class="scroller">
+<figure>
+<svg viewBox="0 0 960 330" role="img" aria-label="OBSソースからEncode、Detectを経て、上段はDecode、DisplayからOBSの番組へ、下段はPackからコンポジットTV信号ソース、Spout Filterを経て外部デコーダへ分岐する経路図" font-family="'IBM Plex Sans JP',sans-serif" font-size="12.5">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+    </marker>
+    <marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--cyan)"/>
+    </marker>
+  </defs>
+  <g fill="none" stroke="currentColor" stroke-width="1.3">
+    <rect x="14"  y="52" width="104" height="52" rx="5"/>
+    <rect x="190" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="382" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="574" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="766" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="382" y="212" width="120" height="52" rx="5" stroke="var(--cyan)" stroke-width="1.6"/>
+    <rect x="574" y="212" width="120" height="52" rx="5" stroke="var(--cyan)"/>
+    <rect x="766" y="212" width="140" height="52" rx="5" stroke-dasharray="5 4"/>
+  </g>
+  <g fill="currentColor" text-anchor="middle">
+    <text x="66"  y="74">OBS ソース</text><text x="66" y="92" font-size="11" opacity=".65">映像 (任意サイズ)</text>
+    <text x="250" y="74" font-weight="600">Encode</text><text x="250" y="92" font-size="11" opacity=".65">送出側（局・デッキ）</text>
+    <text x="442" y="74" font-weight="600">Detect</text><text x="442" y="92" font-size="11" opacity=".65">伝搬路＋検波器</text>
+    <text x="634" y="74" font-weight="600">Decode</text><text x="634" y="92" font-size="11" opacity=".65">TVの映像回路</text>
+    <text x="826" y="74" font-weight="600">Display</text><text x="826" y="92" font-size="11" opacity=".65">ブラウン管</text>
+    <text x="442" y="234" fill="var(--cyan)" font-weight="600">Pack</text><text x="442" y="252" font-size="11" opacity=".65">16bit / 8bit＋ヘッダ行</text>
+    <text x="634" y="234">「コンポジットTV 信号」</text><text x="634" y="252" font-size="11" opacity=".65">コンパニオンソース</text>
+    <text x="836" y="234">Spout Filter →</text><text x="836" y="252" font-size="11" opacity=".65">外部NTSCデコーダ</text>
+  </g>
+  <g stroke="currentColor" stroke-width="1.3" fill="none" color="currentColor">
+    <line x1="118" y1="78" x2="184" y2="78" marker-end="url(#ar)"/>
+    <line x1="310" y1="78" x2="376" y2="78" marker-end="url(#ar)"/>
+    <line x1="502" y1="78" x2="568" y2="78" marker-end="url(#ar)"/>
+    <line x1="694" y1="78" x2="760" y2="78" marker-end="url(#ar)"/>
+    <line x1="886" y1="78" x2="936" y2="78" marker-end="url(#ar)"/>
+  </g>
+  <g stroke="var(--cyan)" stroke-width="1.3" fill="none" color="var(--cyan)">
+    <path d="M442 104 L442 206" marker-end="url(#arc)"/>
+    <path d="M250 104 L250 160 L400 160 L400 206" stroke-dasharray="5 4" marker-end="url(#arc)"/>
+    <line x1="502" y1="238" x2="568" y2="238" marker-end="url(#arc)"/>
+    <line x1="694" y1="238" x2="760" y2="238" marker-end="url(#arc)"/>
+  </g>
+  <g font-size="11" fill="var(--cyan)">
+    <text x="452" y="132">タップ1: 受信後（全劣化込み）</text>
+    <text x="258" y="132">タップ0: エンコード出力（破線）</text>
+    <text x="508" y="228">毎フレーム公開</text>
+  </g>
+  <g font-size="11" fill="currentColor" opacity=".65" text-anchor="middle">
+    <text x="343" y="70">コンポジット</text>
+    <text x="535" y="70">受信済み信号</text>
+    <text x="727" y="70">RGBフィールド</text>
+    <text x="912" y="66">番組へ</text>
+  </g>
+  <g font-size="11">
+    <rect x="519" y="88" width="10" height="10" fill="var(--cyan)" rx="2"/>
+    <text x="535" y="97" fill="var(--cyan)">デバッグ波形はここをトレース</text>
+  </g>
+</svg>
+<figcaption>経路は検波器の出力で二手に分かれる。上段＝内部の受像機（番組に映る絵）、下段＝信号のままの送出。
+Pack は常時走っており、フィルタの表示モードに関係なく信号ソースから取り出せる。</figcaption>
+</figure>
+</div>
+
+<h2><span class="no">02</span>パイプライン詳細 — 仮想機器と注入点</h2>
+
+<div class="rail">
+
+<div class="stage">
+  <div class="stage-head"><span class="pass">CAPTURE</span><span class="gear">入力キャプチャ</span><span class="role">フィルタ対象のソースをそのまま写す</span></div>
+  <ul class="inj">
+    <li><i class="dot ok"></i><span>注入なし（レターボックス／アスペクト処理のみ次段で解決）</span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA8 / ソース解像度 <span class="what">— まだただの映像</span>
+</div></div>
+
+<div class="stage">
+  <div class="stage-head"><span class="pass">ENCODE</span><span class="gear">送出側 — NTSCエンコーダ・VTRデッキ・音声送信機</span><span class="role">910サンプル×263行のフルライン信号を作る</span></div>
+  <ul class="inj">
+    <li><i class="dot ok"></i><span><b>同期骨格＋カラーバースト</b> — 等化・切り込み垂直同期・水平同期・バースト9サイクル（変調基準+147°） <span class="p">syncBaseAt / burstAt</span></span></li>
+    <li><i class="dot ok"></i><span><b>帯域制限</b> Y 4.2 / I 1.3 / Q 0.4 MHz — 色にじみの正体 <span class="p">windowed-sinc FIR</span></span></li>
+    <li><i class="dot ok"></i><span><b>リンギング</b> — 映像アンプの減衰共振。因果カーネルなのでエッジの右側だけに尾 <span class="p">peaking</span></span></li>
+    <li><i class="dot ok"></i><span><b>フラッギング／ヘッドスイッチの千切れ</b> — デッキの時間軸誤差。ライン全体（同期ごと）が揺れる。<span class="why">カラーアンダー相当でクロマ位相は補正済み＝色相は安定（実機どおり）</span> <span class="p">tapeShiftOf → tpos</span></span></li>
+    <li><i class="dot ok"></i><span><b>水平同期ジッタ</b> — 伝送路の時間軸誤差。副搬送波位相ごと揺れる（バーストも一緒に動くので受像側は追従できる） <span class="p">rxJitterOf → offJ, phN</span></span></li>
+    <li><i class="dot wa"></i><span><b>干渉ビート</b> — 混信キャリアの加算。<span class="why">物理的には受信アンテナでの混信。検波前の加算なので効果は等価だが、実装位置の都合でタップ0にも乗る</span> <span class="p">beat_gain</span></span></li>
+    <li><i class="dot ok"></i><span><b>音声搬送波 4.5MHz FM</b> — 指定音声を ±25kHz偏移・75µsプリエンファシスでCPU合成し全ライン（帰線中も）に加算 <span class="p">audio_tex</span></span></li>
+    <li><i class="dot ok"></i><span><b>雑音の素材生成</b> — 複素ガウス雑音を空きチャンネルに書くだけ。<span class="why">この時点では信号に加算されない（注入は検波段）</span> <span class="p">noiseIQ → .ba</span></span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA32F / 910×263 <span class="what">— コンポジット信号。</span>R=信号(±1.33→0..1格納) G=輝度(未使用) B,A=雑音素材<br>
+  <span class="taps"><span class="t">◧ タップ0「デッキ/送信側」</span> はここを取り出す</span>
+</div></div>
+
+<div class="stage">
+  <div class="stage-head"><span class="pass">DETECT</span><span class="gear">伝搬路 — アンテナ・チューナ・IF・包絡線検波器</span><span class="role">電波として受信する。砂嵐が生まれる場所</span></div>
+  <ul class="inj">
+    <li><i class="dot wa"></i><span><b>ドロップアウト＋補償</b> — 時間軸上の信号欠落（0.5µs〜、対数分布）。補償は なし(白飛び/ノイズ帯)・グレー・1H遅延線。<span class="why">物理的にはデッキ内の現象。1H遅延線が「直前ラインのテクスチャ」を必要とするため検波段に実装。色落ちは副搬送波消失から自動的に出る＝効果は正確</span> <span class="p">dropoutAt</span></span></li>
+    <li><i class="dot wa"></i><span><b>ヘッドスイッチのRF途切れ（ノイズ帯）</b> — 下端数ラインが復調不能に。<span class="why">これもデッキ内の現象だが実装は検波段。千切れ（Encode）と同じ帯形状で整列</span></span></li>
+    <li><i class="dot ok"></i><span><b>ゴースト</b> — 遅延した反射波の加算。Y/C分離前なので色にじみを伴う本物の多重像。同期にもゴーストが乗る <span class="p">compositeAt(n−delay)</span></span></li>
+    <li><i class="dot ok"></i><span><b>砂嵐（電界強度）</b> — ライス包絡線検波: 搬送波+帯域制限雑音の包絡線。輝度は一様乱数ではなく<b>レイリー分布</b>。負変調なので大振幅ほど暗い <span class="p">env=|A+n|, IF帯域, 最小雑音</span></span></li>
+    <li><i class="dot ok"></i><span><b>AGC</b> — 検波レベルとハンチング（行ごとの明滅） <span class="p">snow_level, agc_jitter</span></span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA32F / 910×263 <span class="what">— 受信済みコンポジット（同期は −0.4 のまま格納符号化で生存）</span><br>
+  <span class="taps"><span class="t">◧ タップ1「受信後」</span>・<span class="t">◧ デバッグ波形</span>・<span class="t">◧ Pack（信号ソースへ常時公開）</span> はここを取り出す</span>
+</div></div>
+
+<div class="stage">
+  <div class="stage-head"><span class="pass">DECODE</span><span class="gear">受像機 — Y/C分離・同期検波</span><span class="role">信号から絵へ戻す。754×243の有効映像だけを読む</span></div>
+  <ul class="inj">
+    <li><i class="dot ok"></i><span><b>Y/C分離</b> — バンドパス(安物)/2ラインコム/3ラインコム。ドットクロール・クロスカラーは方式差から<b>自然発生</b>（描いていない）</span></li>
+    <li><i class="dot wa"></i><span><b>バーストロックの代役</b> — ジッタの位相補償にエンコーダと同じ関数を直接参照。<span class="why">本物はバーストPLL（B2で実装予定）。信号内でバーストとクロマは常に一致しているので、外部デコーダは正直な手段で同じ結果になる</span> <span class="p">rxJitterOf</span></span></li>
+    <li><i class="dot wa"></i><span><b>カラーキラー</b> — チェックボックス。<span class="why">実機はバースト振幅で自動判定（同期対応済みなので将来は自動化可能）</span></span></li>
+    <li><i class="dot wa"></i><span><b>副搬送波位相ドリフト</b> — 電界強度&lt;0.08でのみ発火するゲート近似。<span class="why">「映像があればバーストに同期する」の代用</span></span></li>
+    <li><i class="dot ok"></i><span><b>コントラスト／ブライトネス</b> — 映像回路の利得・ペデスタル</span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA16F / 754×243 <span class="what">— 復調済みRGBフィールド（1フレーム=1フィールド）</span>
+</div></div>
+
+<div class="stage">
+  <div class="stage-head"><span class="pass">DISPLAY</span><span class="gear">ブラウン管 — 偏向・蛍光体・管面</span><span class="role">ビームが絵を描く。ここに残る注入はすべて受像機側の現象</span></div>
+  <ul class="inj">
+    <li><i class="dot ok"></i><span><b>垂直ロール</b> — V-Hold不良は<b>TVの故障</b>なのでここが正しい（信号の垂直同期は正常。外部デコーダは安定して映るのが正解）</span></li>
+    <li><i class="dot ok"></i><span><b>ドロップアウト直後の同期の乱れ</b> — 受像機の同期分離が体勢を崩す現象 <span class="p">dropoutSkew</span></span></li>
+    <li><i class="dot ok"></i><span><b>消磁</b> — 減衰交流によるうねり・R/Bミスコンバージェンス・虹色純度ムラ</span></li>
+    <li><i class="dot ok"></i><span><b>管の構造</b> — インターレース織り、ビーム径、走査線、残光(max合成)、シャドウマスク/グリル＋ダンパー線、曲率、ビネット、オーバースキャン</span></li>
+    <li><i class="dot ok"></i><span><b>電源エンベロープ</b> — ウォームアップ／垂直・水平コラプス／残光</span></li>
+    <li><i class="dot tap"></i><span><b>デバッグ波形オーバーレイ</b> — 検波後信号の1ラインをトレース（管面より上に描く。表示段は波形に影響しない）</span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA8 / ソース解像度 <span class="what">— 完成した「ブラウン管越しの絵」→ OBSの番組へ</span>
+</div></div>
+
+</div><!-- rail -->
+
+<p class="note"><b>一時発動の注入経路</b> — ドックとホットキーは信号を直接触らず、<b>パラメータを瞬間的に押し上げる</b>だけです。
+受信不良バースト（burst_rx）はジッタ・垂直ロールへ、再生不良バースト（burst_pb）はフラッギング・ヘッドスイッチング・ドロップアウトへ、
+それぞれ独立したエンベロープで加算されます。消磁・電源も同様にパラメータ経由です。</p>
+
+<h2><span class="no">03</span>送出される1フィールドの構造（910×264）</h2>
+<div class="scroller">
+<figure>
+<svg viewBox="0 0 960 400" role="img" aria-label="910×264のパック画像の構造。左156サンプルが水平帰線（フロントポーチ・同期・バースト）、右754サンプルが有効映像。上20行がVBI、最下行がヘッダ行" font-family="'IBM Plex Sans JP',sans-serif" font-size="12">
+  <g transform="translate(45,34)">
+    <!-- outer -->
+    <rect x="0" y="0" width="880" height="300" fill="none" stroke="currentColor" stroke-width="1.4"/>
+    <!-- VBI band: rows 0-19 -> h = 20/264*300 = 22.7 -->
+    <rect x="0" y="0" width="880" height="23" fill="var(--warnbg)"/>
+    <!-- header row: row 263 -> h = 300/264 = 1.14 ; exaggerate to 8 with break marks -->
+    <rect x="0" y="288" width="880" height="12" fill="var(--tapbg)"/>
+    <!-- HBI column below VBI: x 0..156/910*880=150.9 -->
+    <g>
+      <rect x="0" y="23" width="151" height="265" fill="var(--surface2)"/>
+      <!-- front porch 0..21 -> 20.3 -->
+      <line x1="20" y1="23" x2="20" y2="288" stroke="currentColor" stroke-dasharray="3 3" opacity=".5"/>
+      <!-- sync 21..88 -> 85.1 -->
+      <rect x="20" y="23" width="65" height="265" fill="currentColor" opacity=".18"/>
+      <!-- burst 107..143 -> 103.5..138.3 -->
+      <rect x="103" y="23" width="35" height="265" fill="var(--accent)" opacity=".28"/>
+      <line x1="151" y1="23" x2="151" y2="288" stroke="currentColor" stroke-width="1.2"/>
+    </g>
+    <!-- active area label -->
+    <g fill="currentColor" text-anchor="middle">
+      <text x="515" y="160" font-size="15" font-weight="600">有効映像</text>
+      <text x="515" y="182" font-size="12" opacity=".7">754 サンプル × 243 行</text>
+      <text x="515" y="202" font-size="12" opacity=".7">4画素周期の副搬送波縞が乗る</text>
+    </g>
+    <!-- VBI label -->
+    <text x="440" y="16" text-anchor="middle" fill="var(--warn)" font-size="12">VBI 20行 — 等化 3 ／ 垂直同期(切り込み) 3 ／ 等化 3 ／ ブランク 11（半ライン周期のパルス列）</text>
+    <!-- header label -->
+    <text x="440" y="298" text-anchor="middle" fill="var(--cyan)" font-size="11.5">ヘッダ行（信号ではない荷札）: magic 0x4354 ・ version ・ format ・ tap ・ フィールド番号0–3 ・ 音声サンプル数 ・ 音声有無</text>
+    <!-- column labels -->
+    <g font-size="11" fill="currentColor" opacity=".85">
+      <text x="10" y="43" text-anchor="middle" transform="rotate(-90 10 43)"></text>
+    </g>
+    <g font-size="11.5" fill="currentColor">
+      <text x="10" y="316" text-anchor="middle" opacity=".8">FP</text>
+      <text x="52" y="316" text-anchor="middle">同期 −0.4</text>
+      <text x="120" y="316" text-anchor="middle" fill="var(--accent)">バースト ±0.2</text>
+      <text x="515" y="316" text-anchor="middle" opacity=".8">映像 0（黒）〜 1.0（白）</text>
+    </g>
+    <!-- sample rulers -->
+    <g font-family="'IBM Plex Mono',monospace" font-size="10.5" fill="currentColor" opacity=".65">
+      <text x="0" y="336">0</text>
+      <text x="20" y="336">21</text>
+      <text x="78" y="336">88</text>
+      <text x="103" y="336">107</text>
+      <text x="140" y="336">143</text>
+      <text x="151" y="350">156 (=4の倍数 → 復調位相が無補正で一致)</text>
+      <text x="880" y="336" text-anchor="end">910</text>
+    </g>
+    <!-- row ruler right -->
+    <g font-family="'IBM Plex Mono',monospace" font-size="10.5" fill="currentColor" opacity=".65">
+      <text x="888" y="10">行0</text>
+      <text x="888" y="30">行20</text>
+      <text x="888" y="288">行262</text>
+      <text x="888" y="299">行263</text>
+    </g>
+  </g>
+</svg>
+<figcaption>1画像 = 1フィールド。910 × 262.5 × 59.94 ≒ 14.318 MS/s = 4fsc と規格がそのまま閉じる。
+16bit形式は R=上位バイト／G=下位バイト、復元は <span class="mono">composite = (v16/65535 − 0.5) / 0.375</span>。
+ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ行を落とせばほぼ相互変換できる。</figcaption>
+</figure>
+</div>
+
+<h2><span class="no">04</span>物理的正当性の総括</h2>
+<div class="scroller">
+<table>
+<tr><th>現象</th><th>実装位置</th><th>物理的な発生場所</th><th>評価</th></tr>
+<tr><td>同期・バースト・VBI</td><td>Encode</td><td>送出局のエンコーダ</td><td><span class="chip ok">✓ 一致</span></td></tr>
+<tr><td>帯域制限・色にじみ</td><td>Encode</td><td>NTSC規格そのもの</td><td><span class="chip ok">✓ 一致</span></td></tr>
+<tr><td>リンギング</td><td>Encode</td><td>映像アンプの共振</td><td><span class="chip ok">✓ 一致</span><span class="why">因果カーネルで右側のみ＝最小位相</span></td></tr>
+<tr><td>フラッギング／千切れ</td><td>Encode（時間軸）</td><td>デッキの時間軸誤差</td><td><span class="chip ok">✓ 一致</span><span class="why">カラーアンダーの位相補正まで再現</span></td></tr>
+<tr><td>水平同期ジッタ</td><td>Encode（時間軸）</td><td>伝送路</td><td><span class="chip ok">✓ 一致</span><span class="why">バースト・クロマ・同期が一体で揺れる</span></td></tr>
+<tr><td>干渉ビート</td><td>Encode 末尾</td><td>受信アンテナの混信</td><td><span class="chip wa">△ 位置</span><span class="why">検波前加算なので効果は等価。タップ0に乗る不純のみ</span></td></tr>
+<tr><td>音声搬送波</td><td>Encode</td><td>音声送信機（+4.5MHz）</td><td><span class="chip ok">✓ 一致</span><span class="why">ビート音・点模様は受信側で自然発生</span></td></tr>
+<tr><td>砂嵐・ゴースト・AGC</td><td>Detect</td><td>伝搬路〜検波器</td><td><span class="chip ok">✓ 一致</span><span class="why">レイリー分布は検波の数学から</span></td></tr>
+<tr><td>ドロップアウト＋DOC</td><td>Detect</td><td>デッキ内（RF喪失＋補償回路）</td><td><span class="chip wa">△ 位置</span><span class="why">1H遅延線が前ラインのテクスチャを要するため。色落ち等の効果は正確</span></td></tr>
+<tr><td>ヘッドスイッチのノイズ帯</td><td>Detect</td><td>デッキ内（ヘッド切替のRF途切れ）</td><td><span class="chip wa">△ 位置</span><span class="why">効果は正確。タップ0に乗らない</span></td></tr>
+<tr><td>Y/C分離・ドットクロール・クロスカラー</td><td>Decode</td><td>受像機</td><td><span class="chip ok">✓ 一致</span><span class="why">方式差からの自然発生</span></td></tr>
+<tr><td>バーストロック</td><td>Decode</td><td>受像機のバーストPLL</td><td><span class="chip wa">△ 代役</span><span class="why">エンコーダの関数を直接参照。B2でPLL化予定</span></td></tr>
+<tr><td>カラーキラー／位相ドリフト</td><td>Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip wa">△ 近似</span><span class="why">手動スイッチ／電界強度ゲートで代用</span></td></tr>
+<tr><td>垂直ロール・ドロップアウト後の乱れ</td><td>Display</td><td>受像機の同期系</td><td><span class="chip ok">✓ 一致</span><span class="why">信号側に置かないのが正しい</span></td></tr>
+<tr><td>消磁・マスク・残光・曲率・電源</td><td>Display</td><td>ブラウン管</td><td><span class="chip ok">✓ 一致</span></td></tr>
+</table>
+</div>
+
+<h2><span class="no">05</span>既知の近似と次の一手</h2>
+<p>△ の大半は「効果は正確だが、パイプライン上の実装位置が物理と1段ずれている」類のもので、
+見た目と送出信号の正しさには影響しません。唯一の本質的な代役は<b>バーストロック</b>で、
+受像側に同期分離＋バーストPLL＋AGC追従（ライン解析パス）を実装する <b>B2</b> で解消します。
+B2 が入ると、カラーキラーの自動判定・弱電界での同期乱れの自然発生・フラッギングの
+「AFC追従遅れによる曲がり」までが、パラメータではなく物理から創発するようになります。</p>
+</div>
