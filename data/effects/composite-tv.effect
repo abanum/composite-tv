@@ -22,6 +22,9 @@ uniform texture2d image;          // primary input of the current pass
 uniform texture2d field_prev;     // Display: previous decoded field (interlace)
 uniform texture2d display_prev;   // Display: previous final frame (persistence)
 uniform texture2d scope_src;      // Display: detected composite, for the debug waveform
+uniform texture2d track_tex;      // Decode: per-row sync/burst measurements (Track pass)
+uniform texture2d flywheel_tex;   // Display: smoothed horizontal AFC estimate (Flywheel pass)
+uniform float killer_auto;        // 1: colour killer decides from the measured burst
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -192,6 +195,19 @@ uniform float flash;              // discharge flash amount
 #define SYNC_LEVEL -0.4           /* -40 IRE; blanking = 0, peak white = 1 */
 #define BURST_AMP 0.2             /* +/-20 IRE */
 #define PACK_H 264                /* signal rows plus one header row at the bottom */
+
+/* Receiver tracking (Track / Flywheel passes). The sync separator looks for
+ * the pulse's leading edge inside a gate at the head of the line; the
+ * flywheel is the horizontal AFC, an exponential average whose time constant
+ * is what turns a timing step into the classic bend. Offsets are stored as
+ * value / TRACK_SPAN + 0.5, phases as rad / 2pi + 0.5. */
+#define SYNC_GATE 120             /* how far into the line the separator looks */
+#define SYNC_EDGE 21              /* where the leading edge nominally falls */
+#define SYNC_THRESH -0.18         /* halfway into the pulse: the slicing level */
+#define TRACK_SPAN 64.0           /* offset storage scale, samples */
+#define TRACK_CLAMP 30.0          /* the gate limits how far a mistrigger can pull */
+#define AFC_TAPS 32               /* flywheel memory, in lines */
+#define AFC_POLE 0.92             /* per-line decay = exp(-1/12): tau of 12 lines */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -737,6 +753,101 @@ float4 PSDetect(VertData v) : TARGET
 }
 
 //============================================================================
+// Track : the receiver reads its own timing off the received signal
+//============================================================================
+
+// One texel per signal row. This is the receiver's measuring side: the sync
+// separator slices the received line for the pulse's leading edge, and the
+// burst gate - keyed off that edge, as in a real set - correlates nine cycles
+// against the reference oscillator. Everything downstream (the horizontal
+// AFC, the chroma reference, the colour killer) consumes these measurements
+// instead of asking the encoder what it did. Weak signal therefore degrades
+// the receiver honestly: the separator mistriggers on noise, the burst
+// correlation loses amplitude, and nothing here is told the field strength.
+//
+// Output per row: R = sync timing error, G = burst phase error,
+// B = burst amplitude, A = 1 when a real edge was found.
+float4 PSTrack(VertData v) : TARGET
+{
+	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
+
+	// The nine vertical-pulse rows keep their edges at the nominal spot by
+	// construction - that is exactly what equalizing pulses are for - so the
+	// separator reports nominal instead of being confused by their widths.
+	if (row < 9)
+		return float4(0.5, 0.5, 0.0, 1.0);
+
+	// Sync separator: first crossing below the slicing level inside the gate.
+	float edge = -1.0;
+	for (int n = 0; n < SYNC_GATE; ++n) {
+		if (edge < 0.0 && compositeAt(n, row) < SYNC_THRESH)
+			edge = (float)n;
+	}
+	float syncErr;
+	if (edge >= 0.0) {
+		syncErr = clamp(edge - (float)SYNC_EDGE, -TRACK_CLAMP, TRACK_CLAMP);
+	} else {
+		// Nothing crossed the level - a dropout ate the pulse, or snow
+		// drowned it. A real separator does not report "no line"; it
+		// latches onto whatever noise is in the gate, so the error it
+		// hands the flywheel is a bounded random one.
+		syncErr = (hash13(float3((float)row, (float)field_seed, 41.0)) - 0.5) * 2.0 * TRACK_CLAMP;
+	}
+
+	// Burst gate, keyed off the measured edge. Correlating against the
+	// fixed-grid reference makes the result directly usable as the demod
+	// correction: for a burst at sin(theta + d) the two sums come out as
+	// C ~ sin(d), S ~ cos(d), so d = atan2(C, S).
+	float C = 0.0;
+	float S = 0.0;
+	float shift = (edge >= 0.0) ? (edge - (float)SYNC_EDGE) : 0.0;
+	for (int k = 0; k < 36; ++k) {
+		int n = BURST_START + (int)shift + k;
+		float s = compositeAt(n, row);
+		float th = 0.5 * PI * (float)n + linePhaseOf(row) + burst_phase + 2.5656340;
+		C += s * cos(th);
+		S += s * sin(th);
+	}
+	float amp = (2.0 / 36.0) * sqrt(C * C + S * S);
+	float dphi = atan2(C, S);
+
+	return float4(syncErr / TRACK_SPAN + 0.5, dphi / (2.0 * PI) + 0.5, clamp(amp, 0.0, 1.0),
+		      (edge >= 0.0) ? 1.0 : 0.0);
+}
+
+//============================================================================
+// Flywheel : the horizontal AFC
+//============================================================================
+
+// The line oscillator does not believe any single sync pulse; it averages
+// them with a time constant of about a dozen lines. That inertia is the whole
+// character of horizontal lock: a slow timing error is followed and vanishes
+// from the screen, a step (head switch, a dropout's mistrigger) takes lines
+// to catch up with and paints the bend while it does, and per-line jitter
+// passes straight through to the picture.
+float4 PSFlywheel(VertData v) : TARGET
+{
+	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
+
+	float h = 0.0;
+	float norm = 0.0;
+	float w = 1.0;
+	for (int k = 0; k < AFC_TAPS; ++k) {
+		int r = row - k;
+		if (r >= 0) {
+			float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
+			float e = (image.Sample(pointClamp, uv).r - 0.5) * TRACK_SPAN;
+			h += e * w;
+			norm += w;
+		}
+		w *= AFC_POLE;
+	}
+	h /= max(norm, 1.0e-5);
+
+	return float4(h / TRACK_SPAN + 0.5, 0.0, 0.0, 1.0);
+}
+
+//============================================================================
 // Decode : Y/C separation + synchronous chroma demodulation -> RGB
 //============================================================================
 
@@ -788,11 +899,15 @@ float4 PSDecode(VertData v) : TARGET
 	// The demodulation phase advances by exactly 90 degrees per sample, so
 	// after one sincos at the centre tap the two directions are pure sign
 	// rotations - no per-tap trig at all.
-	// The jitter correction is what a burst-locked receiver does: the burst
-	// gate hands the demodulator THIS line's burst phase, which travelled
-	// with the shift. Until a real burst PLL exists, asking the encoder's
-	// jitter function gives the identical answer.
-	float ph0 = 0.5 * PI * ((float)n - rxJitterOf(ln + VBI_ROWS)) + linePhaseOf(ln) + burst_phase + cyc_phase;
+	// The demod reference comes from the measured burst of THIS line (Track
+	// pass): a burst-gated AFPC, settled within the burst as in a real set.
+	// With no usable burst the oscillator free-runs and picks up the slow
+	// drift instead - the receiver is never told why the burst vanished.
+	float2 tuv = float2(((float)(ln + VBI_ROWS) + 0.5) / (float)SIG_H, 0.5);
+	float4 trk = track_tex.Sample(pointClamp, tuv);
+	float bphi = (trk.g - 0.5) * (2.0 * PI);
+	float lock = smoothstep(0.05, 0.12, trk.b);
+	float ph0 = 0.5 * PI * (float)n + linePhaseOf(ln) + burst_phase + lock * bphi + (1.0 - lock) * cyc_phase;
 	float cp0 = cos(ph0);
 	float sp0 = sin(ph0);
 
@@ -840,8 +955,12 @@ float4 PSDecode(VertData v) : TARGET
 	}
 	luma /= max(lnorm, 1.0e-6);
 	float inv = 2.0 / max(cnorm, 1.0e-6);
-	ci *= inv * chroma_gain;
-	cq *= inv * chroma_gain;
+	// The automatic colour killer: no measured burst, no colour. This is why
+	// snow on a real set is monochrome, and it needs no wiring to the field
+	// strength - the burst simply drowns. The manual modes bypass it.
+	float ckill = (killer_auto > 0.5) ? lock : 1.0;
+	ci *= inv * chroma_gain * ckill;
+	cq *= inv * chroma_gain * ckill;
 
 	float Y = luma * contrast + brightness;
 	float3 rgb = float3(
@@ -939,46 +1058,19 @@ float3 shadowMask(float2 suv)
 	return w;
 }
 
-// A long dropout takes the line sync with it, and a deck without a time-base
-// corrector cannot get it back at once: the lines that follow start early or
-// late until the servo catches up. Only long defects do this, and they are
-// rare, so two lines of history is enough to look for one.
-float dropoutSkew(int li)
-{
-	// The defect belongs to the signal, which is counted in signal rows (VBI
-	// included), while the beam is counted in drawn lines. This conversion
-	// must match dropoutAt and the CPU's damage_line, or the skew detaches
-	// from the streak that caused it.
-	float row = floor((float)li * field_row_step) + (float)VBI_ROWS;
-	float o = 0.0;
-	for (int k = 1; k <= 2; ++k) {
-		float l0 = row - (float)k;
-		float decay = 1.0 / (float)k;
-
-		if (hash13(float3(l0, (float)field_seed, 11.0)) < dropout_prob) {
-			float u = hash13(float3(l0, (float)field_seed, 17.0));
-			float len = dropout_min * exp(u * u * u * dropout_span);
-			if (len > 0.5)
-				o += (hash13(float3(l0, (float)field_seed, 23.0)) - 0.5) * 0.16 *
-				     saturate(len) * decay;
-		}
-
-		if (damage_len > 0.5 && abs(l0 - damage_line) < 0.5)
-			o += 0.05 * decay;
-	}
-	return o;
-}
-
-// Horizontal displacement of one scan line as the BEAM sees it. The line
-// time-base errors - jitter, flagging, the head-switching tear - moved into
-// the signal itself (see the time-base block above Encode), so what stays
-// here is the one displacement that belongs to the receiver: its sync
-// separator losing its footing after a long dropout.
+// Horizontal placement of one scan line as the BEAM draws it: the horizontal
+// AFC's current estimate, read from the Flywheel pass. The raw timing errors
+// are baked into the decoded field, so what scan-out applies is only the
+// receiver's own smoothed estimate: a slow error is followed and straightens
+// out, a step paints the bend while the flywheel catches up, per-line jitter
+// passes through untouched. The sync upset after a long dropout needs no
+// special case any more - the separator's mistriggers pollute the estimate
+// and the tear falls out of the measurement.
 float lineShift(int li)
 {
-	if (dropout_prob > 0.0 || damage_len > 0.0)
-		return dropoutSkew(li);
-	return 0.0;
+	float row = floor((float)li * field_row_step) + (float)VBI_ROWS;
+	float2 uv = float2((row + 0.5) / (float)SIG_H, 0.5);
+	return (flywheel_tex.Sample(pointClamp, uv).r - 0.5) * TRACK_SPAN / field_size.x;
 }
 
 // Sample a scan ln, choosing the current or previous field for the weave.
@@ -1318,5 +1410,23 @@ technique Pack
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSPack(v);
+	}
+}
+
+technique Track
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSTrack(v);
+	}
+}
+
+technique Flywheel
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSFlywheel(v);
 	}
 }

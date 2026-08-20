@@ -212,7 +212,7 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
   <div class="eyebrow">Composite TV — Signal Path Reference</div>
   <h1>コンポジットTV 信号経路図</h1>
   <p class="lede">キャプチャから送出までの全経路。各段が模している仮想機器、段間を流れる信号の形式、
-  そしてすべてのノイズ／グリッチの注入点とその物理的正当性。v1.0.5 + フルライン化・信号出力・時間軸誤差の信号化まで反映。</p>
+  そしてすべてのノイズ／グリッチの注入点とその物理的正当性。v1.0.5 + フルライン化・信号出力・時間軸誤差の信号化・受像機追従（B2）まで反映。</p>
 </header>
 
 <div class="legend">
@@ -342,7 +342,8 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
   <div class="stage-head"><span class="pass">DECODE</span><span class="gear">受像機 — Y/C分離・同期検波</span><span class="role">信号から絵へ戻す。754×243の有効映像だけを読む</span></div>
   <ul class="inj">
     <li><i class="dot ok"></i><span><b>Y/C分離</b> — バンドパス(安物)/2ラインコム/3ラインコム。ドットクロール・クロスカラーは方式差から<b>自然発生</b>（描いていない）</span></li>
-    <li><i class="dot wa"></i><span><b>バーストロックの代役</b> — ジッタの位相補償にエンコーダと同じ関数を直接参照。<span class="why">本物はバーストPLL（B2で実装予定）。信号内でバーストとクロマは常に一致しているので、外部デコーダは正直な手段で同じ結果になる</span> <span class="p">rxJitterOf</span></span></li>
+    <li><i class="dot ok"></i><span><b>バーストゲートAFPC</b> — Trackパスがライン毎に受信信号のバーストを相関検出し、その実測位相を復調基準にする。バーストが検出できないと発振器は自走してドリフト <span class="p">PSTrack → trk.g</span></span></li>
+    <li><i class="dot ok"></i><span><b>カラーキラー（自動）</b> — 実測バースト振幅が閾値を割ると色を殺す。砂嵐がモノクロになるのは電界強度を見ているからではなく、バーストが雑音に沈むから <span class="p">trk.b → lock</span></span></li>
     <li><i class="dot wa"></i><span><b>カラーキラー</b> — チェックボックス。<span class="why">実機はバースト振幅で自動判定（同期対応済みなので将来は自動化可能）</span></span></li>
     <li><i class="dot wa"></i><span><b>副搬送波位相ドリフト</b> — 電界強度&lt;0.08でのみ発火するゲート近似。<span class="why">「映像があればバーストに同期する」の代用</span></span></li>
     <li><i class="dot ok"></i><span><b>コントラスト／ブライトネス</b> — 映像回路の利得・ペデスタル</span></li>
@@ -357,7 +358,7 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
   <div class="stage-head"><span class="pass">DISPLAY</span><span class="gear">ブラウン管 — 偏向・蛍光体・管面</span><span class="role">ビームが絵を描く。ここに残る注入はすべて受像機側の現象</span></div>
   <ul class="inj">
     <li><i class="dot ok"></i><span><b>垂直ロール</b> — V-Hold不良は<b>TVの故障</b>なのでここが正しい（信号の垂直同期は正常。外部デコーダは安定して映るのが正解）</span></li>
-    <li><i class="dot ok"></i><span><b>ドロップアウト直後の同期の乱れ</b> — 受像機の同期分離が体勢を崩す現象 <span class="p">dropoutSkew</span></span></li>
+    <li><i class="dot ok"></i><span><b>水平AFC（フライホイール）</b> — 同期分離器の実測誤差を約12ライン時定数で平均し、走査時に補正。遅い誤差は真っ直ぐに直り、段差（ヘッドスイッチ等）は追従中の曲がりとして映り、ライン毎のジッタは素通しになる。<span class="why">ドロップアウト後の乱れは、同期を食われた行で分離器が雑音に誤トリガし推定を汚すことから創発（専用コードは削除済み）</span> <span class="p">PSTrack → PSFlywheel → lineShift</span></span></li>
     <li><i class="dot ok"></i><span><b>消磁</b> — 減衰交流によるうねり・R/Bミスコンバージェンス・虹色純度ムラ</span></li>
     <li><i class="dot ok"></i><span><b>管の構造</b> — インターレース織り、ビーム径、走査線、残光(max合成)、シャドウマスク/グリル＋ダンパー線、曲率、ビネット、オーバースキャン</span></li>
     <li><i class="dot ok"></i><span><b>電源エンベロープ</b> — ウォームアップ／垂直・水平コラプス／残光</span></li>
@@ -458,17 +459,19 @@ ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ
 <tr><td>ドロップアウト＋DOC</td><td>Detect</td><td>デッキ内（RF喪失＋補償回路）</td><td><span class="chip wa">△ 位置</span><span class="why">1H遅延線が前ラインのテクスチャを要するため。色落ち等の効果は正確</span></td></tr>
 <tr><td>ヘッドスイッチのノイズ帯</td><td>Detect</td><td>デッキ内（ヘッド切替のRF途切れ）</td><td><span class="chip wa">△ 位置</span><span class="why">効果は正確。タップ0に乗らない</span></td></tr>
 <tr><td>Y/C分離・ドットクロール・クロスカラー</td><td>Decode</td><td>受像機</td><td><span class="chip ok">✓ 一致</span><span class="why">方式差からの自然発生</span></td></tr>
-<tr><td>バーストロック</td><td>Decode</td><td>受像機のバーストPLL</td><td><span class="chip wa">△ 代役</span><span class="why">エンコーダの関数を直接参照。B2でPLL化予定</span></td></tr>
-<tr><td>カラーキラー／位相ドリフト</td><td>Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip wa">△ 近似</span><span class="why">手動スイッチ／電界強度ゲートで代用</span></td></tr>
-<tr><td>垂直ロール・ドロップアウト後の乱れ</td><td>Display</td><td>受像機の同期系</td><td><span class="chip ok">✓ 一致</span><span class="why">信号側に置かないのが正しい</span></td></tr>
+<tr><td>バーストロック</td><td>Track→Decode</td><td>受像機のバーストゲートAFPC</td><td><span class="chip ok">✓ 一致</span><span class="why">受信信号からライン毎に実測。B2で実装</span></td></tr>
+<tr><td>同期分離＋水平AFC</td><td>Track→Flywheel→Display</td><td>受像機の同期系</td><td><span class="chip ok">✓ 一致</span><span class="why">実測＋フライホイール。弱電界の乱れ・ドロップアウト後の引きずりが創発</span></td></tr>
+<tr><td>カラーキラー／位相ドリフト</td><td>Track→Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip ok">✓ 一致</span><span class="why">実測バースト振幅で自動判定・自走ドリフト（B2）。手動モードも残置</span></td></tr>
+<tr><td>垂直ロール</td><td>Display</td><td>受像機のV-Hold</td><td><span class="chip ok">✓ 一致</span><span class="why">信号側に置かないのが正しい（垂直の実測追従はB3候補）</span></td></tr>
 <tr><td>消磁・マスク・残光・曲率・電源</td><td>Display</td><td>ブラウン管</td><td><span class="chip ok">✓ 一致</span></td></tr>
 </table>
 </div>
 
 <h2><span class="no">05</span>既知の近似と次の一手</h2>
-<p>△ の大半は「効果は正確だが、パイプライン上の実装位置が物理と1段ずれている」類のもので、
-見た目と送出信号の正しさには影響しません。唯一の本質的な代役は<b>バーストロック</b>で、
-受像側に同期分離＋バーストPLL＋AGC追従（ライン解析パス）を実装する <b>B2</b> で解消します。
-B2 が入ると、カラーキラーの自動判定・弱電界での同期乱れの自然発生・フラッギングの
-「AFC追従遅れによる曲がり」までが、パラメータではなく物理から創発するようになります。</p>
+<p><b>B2（受像機追従）は実装済み</b>: 同期分離器・水平AFC・バーストゲートAFPC・自動カラーキラーが
+Track/Flywheel パス（263×1のライン解析）として入り、以前「代役」だったバーストロックと
+「専用コード」だったドロップアウト後の乱れは、実測からの創発に置き換わりました。
+残る△は「効果は正確だが実装段が物理と1段ずれている」類（ドロップアウト・ヘッドスイッチノイズ・
+干渉ビートの実装位置）のみで、見た目と送出信号の正しさには影響しません。
+未着手の候補: 垂直同期の実測追従（B3）、同期チップ実測によるAGC、モノクロ送出時のバースト停止。</p>
 </div>

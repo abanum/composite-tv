@@ -207,6 +207,11 @@ struct composite_tv {
 	int signal_tap;    /* 0 encoder output, 1 detector output */
 	gs_texrender_t *pack;
 
+	/* receiver tracking: per-row sync/burst measurements and the AFC */
+	int color_killer_mode; /* 0 auto (burst-driven), 1 off, 2 forced mono */
+	gs_texrender_t *track;
+	gs_texrender_t *flywheel;
+
 	/* debug waveform overlay */
 	bool scope_on;
 	float scope_line;
@@ -453,11 +458,14 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
 	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
 	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
-	/* The colour killer is a plain gate, so fold it in here rather than
-	 * re-testing it on every pass. */
-	f->chroma_gain = obs_data_get_bool(s, "color_killer")
-				 ? 0.0f
-				 : (float)obs_data_get_double(s, "chroma_gain");
+	/* Colour killer. Scenes saved before it became a mode carry the old
+	 * checkbox; a ticked one meant "always monochrome", which is the forced
+	 * mode. Auto (the default) is decided per line by the measured burst in
+	 * the shader; only the forced mode still folds into the gain here. */
+	if (!obs_data_has_user_value(s, "color_killer_mode") && obs_data_get_bool(s, "color_killer"))
+		obs_data_set_int(s, "color_killer_mode", 2);
+	f->color_killer_mode = (int)obs_data_get_int(s, "color_killer_mode");
+	f->chroma_gain = (f->color_killer_mode == 2) ? 0.0f : (float)obs_data_get_double(s, "chroma_gain");
 	f->chroma_drift = (float)obs_data_get_double(s, "chroma_drift");
 
 	/* Everything the shader's FIR recurrences need from the cutoffs. */
@@ -725,6 +733,8 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->display[0]);
 	free_texrender(&f->display[1]);
 	free_texrender(&f->pack);
+	free_texrender(&f->track);
+	free_texrender(&f->flywheel);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -850,8 +860,11 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * no-signal limit - with a picture the receiver locks to the burst. */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
 	set_f(e, "chroma_gain", f->chroma_gain);
-	set_f(e, "cyc_phase",
-	      (float)f->chroma_phase_acc * (1.0f - smoothstepf(0.0f, 0.08f, f->field_strength)));
+	/* The free-run drift is no longer gated by the field strength here: the
+	 * decoder blends it in by the measured burst quality, which is the same
+	 * decision a real oscillator makes - and for the same reason. */
+	set_f(e, "cyc_phase", (float)f->chroma_phase_acc);
+	set_f(e, "killer_auto", f->color_killer_mode == 0 ? 1.0f : 0.0f);
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
@@ -1209,6 +1222,17 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		return;
 	}
 
+	/* Receiver tracking: measure sync and burst per row, then run the AFC
+	 * over the measurements. Two 263x1 passes - the cost is a rounding
+	 * error, and everything the decoder and the tube know about timing and
+	 * colour lock now comes from here rather than from the encoder. */
+	ensure_tr(&f->track, GS_RGBA32F);
+	ensure_tr(&f->flywheel, GS_RGBA32F);
+	gs_texture_t *trk = det ? run_pass(f, e, f->track, SIG_H, 1, "Track", det, cx, cy) : NULL;
+	gs_texture_t *fly = trk ? run_pass(f, e, f->flywheel, SIG_H, 1, "Flywheel", trk, cx, cy) : NULL;
+	set_tex(e, "track_tex", trk ? trk : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
@@ -1297,7 +1321,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
 #define DEF_CHROMA_GAIN 0.70
-#define DEF_COLOR_KILLER false
+#define DEF_COLOR_KILLER_MODE 0
 #define DEF_CHROMA_DRIFT 0.6
 #define DEF_CONTRAST 1.15
 #define DEF_BRIGHTNESS -0.02
@@ -1399,7 +1423,12 @@ static obs_properties_t *ntsc_get_properties(void *data)
 			     DEF_LUMA_BANDWIDTH);
 	ctv_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01,
 			     DEF_CHROMA_GAIN);
-	ctv_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"), DEF_COLOR_KILLER);
+	obs_property_t *ck = obs_properties_add_list(p, "color_killer_mode", obs_module_text("CompositeTV.ColorKiller"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Auto"), 0);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Off"), 1);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Force"), 2);
+	ctv_set_list_default_tip(ck, DEF_COLOR_KILLER_MODE);
 	ctv_add_float_slider(p, "chroma_drift", obs_module_text("CompositeTV.ChromaDrift"), 0.0, 3.0, 0.05,
 			     DEF_CHROMA_DRIFT);
 	ctv_add_float_slider(p, "contrast", obs_module_text("CompositeTV.Contrast"), 0.3, 2.0, 0.01, DEF_CONTRAST);
@@ -1548,7 +1577,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
-	obs_data_set_default_bool(s, "color_killer", DEF_COLOR_KILLER);
+	obs_data_set_default_int(s, "color_killer_mode", DEF_COLOR_KILLER_MODE);
 	obs_data_set_default_double(s, "chroma_drift", DEF_CHROMA_DRIFT);
 	obs_data_set_default_double(s, "contrast", DEF_CONTRAST);
 	obs_data_set_default_double(s, "brightness", DEF_BRIGHTNESS);
