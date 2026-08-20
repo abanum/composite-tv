@@ -187,7 +187,9 @@ uniform float flash;              // discharge flash amount
 #define BURST_END 143             /* nine subcarrier cycles */
 #define HALF_LINE 455             /* VBI pulses run at twice line rate */
 #define EQ_W 33                   /* equalizing pulse, 2.3us */
-#define SYNC_LEVEL (-0.4)         /* -40 IRE; blanking = 0, peak white = 1 */
+/* No parentheses around the value: the libobs preprocessor reads any "(" after
+ * a define name - whitespace or not - as a macro parameter list. */
+#define SYNC_LEVEL -0.4           /* -40 IRE; blanking = 0, peak white = 1 */
 #define BURST_AMP 0.2             /* +/-20 IRE */
 #define PACK_H 264                /* signal rows plus one header row at the bottom */
 
