@@ -176,8 +176,11 @@ struct composite_tv {
 	double afc_phase1; /* wander of the line oscillator's free-run error */
 	double afc_phase2;
 	float fading;       /* depth of the propagation fade */
-	double fade_phase1; /* its two slow oscillators */
-	double fade_phase2;
+	double fade_phase1; /* duct / scatter / polarization: slow and deep   */
+	double fade_phase2; /* interference (two-ray): the seconds-scale beat */
+	double fade_phase3; /* scintillation: the fast flutter, two of them   */
+	double fade_phase4;
+	double fade_phase5;       /* wander of the interfering path's excess delay  */
 	float burst_rx;           /* 1 -> 0 reception burst */
 	float burst_pb;           /* 1 -> 0 playback burst */
 	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
@@ -859,15 +862,19 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
 	set_f(e, "if_cutoff", f->if_cutoff);
-	/* Fading: the propagation path breathes, so the strength the receiver
-	 * actually gets dips below the set value on two very slow sines - the
-	 * E-skip / tropo rise-and-fall. Everything downstream reacts on its own:
-	 * the snow breathes, colour drops in and out at the killer threshold,
-	 * and the horizontal lock swims whenever a dip crosses the margin. */
+	/* Fading, composed the way the propagation handbooks split it: a slow
+	 * deep swell (duct, scatter, polarization), a seconds-scale beat from
+	 * two-ray interference, and the fast small flutter of scintillation.
+	 * Everything downstream reacts on its own: the snow breathes, colour
+	 * drops in and out at the killer threshold, and the horizontal lock
+	 * swims whenever a dip crosses the margin. */
 	float fs_eff = f->field_strength;
+	float fade_dip = 0.0f;
 	if (f->fading > 0.0f) {
-		float fw = 0.6f * (float)sin(f->fade_phase1) + 0.4f * (float)sin(f->fade_phase2);
-		fs_eff *= clampf(1.0f - f->fading * (0.5f + 0.5f * fw), 0.0f, 1.0f);
+		float fw = 0.50f * (float)sin(f->fade_phase1) + 0.35f * (float)sin(f->fade_phase2) +
+			   0.15f * (0.6f * (float)sin(f->fade_phase3) + 0.4f * (float)sin(f->fade_phase4));
+		fade_dip = 0.5f + 0.5f * fw; /* 0 = crest, 1 = deepest */
+		fs_eff *= clampf(1.0f - f->fading * fade_dip, 0.0f, 1.0f);
 	}
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
@@ -950,8 +957,21 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * alone and a playback burst leaves the aerial alone. */
 	const float brx = f->burst_rx;
 	const float bpb = f->burst_pb;
-	set_f(e, "ghost_gain", f->ghost_gain);
-	set_f(e, "ghost_delay", f->ghost_delay);
+	/* Two-ray physics of interference fading: a deep dip means a second path
+	 * of nearly equal strength arriving in antiphase - and a path like that
+	 * IS a ghost. So as the fade approaches its trough, an echo stands up,
+	 * on the user's own ghost path if one is set, else on a wandering path
+	 * of its own. The wander is the reflection point moving. */
+	float gg = f->ghost_gain;
+	float gd = f->ghost_delay;
+	if (f->fading > 0.0f) {
+		float two_ray = f->fading * smoothstepf(0.55f, 0.95f, fade_dip);
+		gg += 0.35f * two_ray;
+		if (f->ghost_delay == 0.0f)
+			gd = 16.0f + 7.0f * (float)sin(f->fade_phase5);
+	}
+	set_f(e, "ghost_gain", gg);
+	set_f(e, "ghost_delay", gd);
 	set_f(e, "beat_gain", f->beat_gain);
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
@@ -1192,10 +1212,14 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * warm resistor here, a cold capacitor there. */
 	f->afc_phase1 = fmod(f->afc_phase1 + 2.0 * NS_PI * 0.043 * dt, 2.0 * NS_PI);
 	f->afc_phase2 = fmod(f->afc_phase2 + 2.0 * NS_PI * 0.013 * dt, 2.0 * NS_PI);
-	/* Propagation fading: E-skip and tropo breathe on seconds-to-tens-of-
-	 * seconds scales. */
-	f->fade_phase1 = fmod(f->fade_phase1 + 2.0 * NS_PI * 0.09 * dt, 2.0 * NS_PI);
-	f->fade_phase2 = fmod(f->fade_phase2 + 2.0 * NS_PI * 0.027 * dt, 2.0 * NS_PI);
+	/* Propagation fading, one oscillator per mechanism: the duct breathes
+	 * over tens of seconds, two-ray interference beats over seconds, and
+	 * scintillation flutters around a second. */
+	f->fade_phase1 = fmod(f->fade_phase1 + 2.0 * NS_PI * 0.027 * dt, 2.0 * NS_PI);
+	f->fade_phase2 = fmod(f->fade_phase2 + 2.0 * NS_PI * 0.17 * dt, 2.0 * NS_PI);
+	f->fade_phase3 = fmod(f->fade_phase3 + 2.0 * NS_PI * 1.3 * dt, 2.0 * NS_PI);
+	f->fade_phase4 = fmod(f->fade_phase4 + 2.0 * NS_PI * 0.47 * dt, 2.0 * NS_PI);
+	f->fade_phase5 = fmod(f->fade_phase5 + 2.0 * NS_PI * 0.031 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
 	if (f->degauss > 0.0f) {
