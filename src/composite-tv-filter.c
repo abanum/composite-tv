@@ -221,8 +221,6 @@ struct composite_tv {
 
 	/* receiver tracking: per-row sync/burst measurements and the AFC */
 	int color_killer_mode; /* 0 auto (burst-driven), 1 off, 2 forced mono */
-	gs_stagesurf_t *dbg_stage; /* TEMPORARY: readback for tracking diagnosis */
-	uint64_t dbg_last;
 	gs_texrender_t *track;
 	gs_texrender_t *flywheel[2]; /* ping-pong: the oscillator state carries across fields */
 	int fly_idx;
@@ -754,8 +752,6 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->track);
 	free_texrender(&f->flywheel[0]);
 	free_texrender(&f->flywheel[1]);
-	if (f->dbg_stage)
-		gs_stagesurface_destroy(f->dbg_stage);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -1320,39 +1316,6 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
-	/* TEMPORARY diagnosis: once a second, read three rows of both tracking
-	 * textures back and log them. Remove once the shift is understood. */
-	uint64_t dbg_now = os_gettime_ns();
-	if (trk && fly && dbg_now - f->dbg_last > 1000000000ULL) {
-		f->dbg_last = dbg_now;
-		if (!f->dbg_stage)
-			f->dbg_stage = gs_stagesurface_create(SIG_H, 1, GS_RGBA32F);
-		if (f->dbg_stage) {
-			uint8_t *data;
-			uint32_t linesize;
-			gs_stage_texture(f->dbg_stage, trk);
-			if (gs_stagesurface_map(f->dbg_stage, &data, &linesize)) {
-				const float *px = (const float *)data;
-				obs_log(LOG_INFO,
-					"[dbg trk] r30=(%.3f %.3f %.3f %.3f) r100=(%.3f %.3f %.3f %.3f) r200=(%.3f %.3f %.3f %.3f)",
-					px[30 * 4 + 0], px[30 * 4 + 1], px[30 * 4 + 2], px[30 * 4 + 3],
-					px[100 * 4 + 0], px[100 * 4 + 1], px[100 * 4 + 2], px[100 * 4 + 3],
-					px[200 * 4 + 0], px[200 * 4 + 1], px[200 * 4 + 2], px[200 * 4 + 3]);
-				gs_stagesurface_unmap(f->dbg_stage);
-			}
-			gs_stage_texture(f->dbg_stage, fly);
-			if (gs_stagesurface_map(f->dbg_stage, &data, &linesize)) {
-				const float *px = (const float *)data;
-				obs_log(LOG_INFO,
-					"[dbg fly] r30=(%.3f %.3f %.3f %.3f) r100=(%.3f %.3f %.3f %.3f) r262=(%.3f %.3f %.3f %.3f)",
-					px[30 * 4 + 0], px[30 * 4 + 1], px[30 * 4 + 2], px[30 * 4 + 3],
-					px[100 * 4 + 0], px[100 * 4 + 1], px[100 * 4 + 2], px[100 * 4 + 3],
-					px[262 * 4 + 0], px[262 * 4 + 1], px[262 * 4 + 2], px[262 * 4 + 3]);
-				gs_stagesurface_unmap(f->dbg_stage);
-			}
-		}
-	}
-
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
@@ -1370,6 +1333,14 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * no other reason to see. Bound whether or not it is switched on: the
 	 * sampler is in the compiled shader either way. */
 	set_tex(e, "scope_src", det ? det : field_cur);
+	/* gs_technique_end() cleared EVERY effect parameter when the Decode
+	 * technique finished - textures included - so the bindings made above
+	 * the Decode pass are gone by now. Without this re-bind the display
+	 * pass samples unbound (all-zero) textures, decodes them as an AFC
+	 * estimate of "half span left", and the whole picture lands a fifth of
+	 * a line to the right. */
+	set_tex(e, "track_tex", trk ? trk : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
