@@ -201,11 +201,9 @@ uniform float flash;              // discharge flash amount
  * flywheel is the horizontal AFC, an exponential average whose time constant
  * is what turns a timing step into the classic bend. Offsets are stored as
  * value / TRACK_SPAN + 0.5, phases as rad / 2pi + 0.5. */
-#define SYNC_GATE 120             /* how far into the line the separator looks */
 #define SYNC_EDGE 21              /* where the leading edge nominally falls */
-#define SYNC_THRESH -0.18         /* halfway into the pulse: the slicing level */
+#define SYNC_SEARCH 30            /* gate half-width the separator hunts over */
 #define TRACK_SPAN 64.0           /* offset storage scale, samples */
-#define TRACK_CLAMP 30.0          /* the gate limits how far a mistrigger can pull */
 #define AFC_TAPS 32               /* flywheel memory, in lines */
 #define AFC_POLE 0.92             /* per-line decay = exp(-1/12): tau of 12 lines */
 
@@ -777,32 +775,35 @@ float4 PSTrack(VertData v) : TARGET
 	if (row < 9)
 		return float4(0.5, 0.5, 0.0, 1.0);
 
-	// Sync separator: first crossing below the slicing level inside the gate.
-	float edge = -1.0;
-	for (int n = 0; n < SYNC_GATE; ++n) {
-		if (edge < 0.0 && compositeAt(n, row) < SYNC_THRESH)
-			edge = (float)n;
+	// Sync separator, matched-filter style: slide a window the width of the
+	// pulse across the gate and take the offset where it sums lowest. This
+	// is what an integrating separator does, and it is what makes the
+	// receiver degrade honestly instead of falling for the first noise
+	// spike: averaging over the 67-sample pulse buys a factor of eight
+	// against per-sample noise, so lock holds far down into the snow -
+	// and when the noise finally wins, the minimum lands somewhere random
+	// in the gate and the flywheel starts to swim. The running sum makes
+	// the search two adds per candidate instead of a fresh 67-tap sum.
+	float acc = 0.0;
+	for (int k = 0; k < SYNC_W; ++k)
+		acc += compositeAt(SYNC_EDGE - SYNC_SEARCH + k, row);
+	float best = acc;
+	float syncErr = -(float)SYNC_SEARCH;
+	for (int sh = -SYNC_SEARCH + 1; sh <= SYNC_SEARCH; ++sh) {
+		acc += compositeAt(SYNC_EDGE + sh + SYNC_W - 1, row) - compositeAt(SYNC_EDGE + sh - 1, row);
+		if (acc < best) {
+			best = acc;
+			syncErr = (float)sh;
+		}
 	}
-	float syncErr;
-	if (edge >= 0.0) {
-		syncErr = clamp(edge - (float)SYNC_EDGE, -TRACK_CLAMP, TRACK_CLAMP);
-	} else {
-		// Nothing crossed the level - a dropout ate the pulse, or snow
-		// drowned it. A real separator does not report "no line"; it
-		// latches onto whatever noise is in the gate, so the error it
-		// hands the flywheel is a bounded random one.
-		syncErr = (hash13(float3((float)row, (float)field_seed, 41.0)) - 0.5) * 2.0 * TRACK_CLAMP;
-	}
-
 	// Burst gate, keyed off the measured edge. Correlating against the
 	// fixed-grid reference makes the result directly usable as the demod
 	// correction: for a burst at sin(theta + d) the two sums come out as
 	// C ~ sin(d), S ~ cos(d), so d = atan2(C, S).
 	float C = 0.0;
 	float S = 0.0;
-	float shift = (edge >= 0.0) ? (edge - (float)SYNC_EDGE) : 0.0;
 	for (int k = 0; k < 36; ++k) {
-		int n = BURST_START + (int)shift + k;
+		int n = BURST_START + (int)syncErr + k;
 		float s = compositeAt(n, row);
 		float th = 0.5 * PI * (float)n + linePhaseOf(row) + burst_phase + 2.5656340;
 		C += s * cos(th);
@@ -811,8 +812,10 @@ float4 PSTrack(VertData v) : TARGET
 	float amp = (2.0 / 36.0) * sqrt(C * C + S * S);
 	float dphi = atan2(C, S);
 
-	return float4(syncErr / TRACK_SPAN + 0.5, dphi / (2.0 * PI) + 0.5, clamp(amp, 0.0, 1.0),
-		      (edge >= 0.0) ? 1.0 : 0.0);
+	// A: how deep the found pulse is vs its nominal -0.4 x 67 samples - a
+	// lock-quality figure for anything downstream that wants one.
+	float depth = saturate(-best / (0.4 * (float)SYNC_W));
+	return float4(syncErr / TRACK_SPAN + 0.5, dphi / (2.0 * PI) + 0.5, clamp(amp, 0.0, 1.0), depth);
 }
 
 //============================================================================
