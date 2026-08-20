@@ -872,7 +872,7 @@ float4 PSFlywheel(VertData v) : TARGET
 	// cycle's position (G) and velocity (B).
 	float2 last = float2(((float)(SIG_H - 1) + 0.5) / (float)SIG_H, 0.5);
 	float4 pv = flywheel_prev.Sample(pointClamp, last);
-	float h  = (pv.r - 0.5) * TRACK_SPAN;
+	float h  = clamp((pv.r - 0.5) * TRACK_SPAN, -80.0, 80.0);
 	float ho = clamp((pv.g - 0.5) * TRACK_SPAN, -80.0, 80.0);
 	float vo = clamp((pv.b - 0.5) * 32.0, -16.0, 16.0);
 
@@ -1367,6 +1367,20 @@ float4 PSDisplay(VertData v) : TARGET
 				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.85);
 			if (val > min(s0, s1) - w && val < max(s0, s1) + w)
 				outCol = float3(0.25, 1.0, 0.35);
+
+			// Receiver-tracking traces, field rows mapped across the panel:
+			// amber = the AFC estimate the beam applies (fraction of the
+			// panel height = TRACK_SPAN samples full scale), cyan = the
+			// separator's per-line trust. What the tube does with timing
+			// is exactly the amber line.
+			float2 fuv = float2(v.uv.x, 0.5);
+			float4 fw2 = flywheel_tex.Sample(pointClamp, fuv);
+			float4 tk2 = track_tex.Sample(pointClamp, fuv);
+			float hshift = (fw2.r - 0.5) + (fw2.g - 0.5); /* -1..1 */
+			if (abs(val - (0.35 + hshift)) < w * 1.2)
+				outCol = float3(1.0, 0.72, 0.2);
+			if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
+				outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
 		}
 	}
 
