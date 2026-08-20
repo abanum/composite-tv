@@ -387,7 +387,7 @@ float tapeShiftOf(int srow)
 {
 	float o = 0.0;
 	float t = saturate(((float)(srow - VBI_ROWS) + 0.5) / field_size.y);
-	if (flagging > 0.0)
+	if (flagging != 0.0)
 		o += flagging * 0.12 * exp(-t * 18.0) * field_size.x;
 	if (head_switch > 0.0 && srow >= VBI_ROWS) {
 		float band = head_switch * 0.05;

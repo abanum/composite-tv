@@ -154,6 +154,7 @@ struct composite_tv {
 	float v_roll_speed;
 	float h_jitter;
 	float flagging;
+	float flag_wave; /* tension wobble: the bend waves ("flagwaving") */
 	float head_switch;
 	float dropout;
 	int dropout_mode; /* 0 none, 1 grey restorer, 2 1H delay line */
@@ -170,6 +171,8 @@ struct composite_tv {
 	double v_roll_pos;
 	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
+	double flag_phase1; /* the two slow oscillators of the tension wobble */
+	double flag_phase2;
 	float burst_rx;           /* 1 -> 0 reception burst */
 	float burst_pb;           /* 1 -> 0 playback burst */
 	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
@@ -512,6 +515,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
 	f->flagging = pb ? (float)obs_data_get_double(s, "flagging") : 0.0f;
+	f->flag_wave = pb ? (float)obs_data_get_double(s, "flag_wave") : 0.0f;
 	f->head_switch = pb ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
 	f->peaking = pb ? (float)obs_data_get_double(s, "peaking") : 0.0f;
 	f->dropout = pb ? (float)obs_data_get_double(s, "dropout") : 0.0f;
@@ -934,7 +938,14 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "v_roll", (float)f->v_roll_pos);
 	set_f(e, "vblank_lines", bar_lines(f));
 	set_f(e, "h_jitter", clampf(f->h_jitter + brx * 0.8f, 0.0f, 2.0f));
-	set_f(e, "flagging", clampf(f->flagging + bpb * 0.6f, 0.0f, 2.0f));
+	/* Flagging can bend either way - the sign of the tension error decides -
+	 * and a wandering tension makes the bend wave. The wobble is two slow
+	 * incommensurate sines, so the flag never settles into a loop, and the
+	 * burst pushes away from zero in whichever direction is already live. */
+	float flag_eff =
+		f->flagging + f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
+	flag_eff += bpb * 0.6f * (flag_eff < 0.0f ? -1.0f : 1.0f);
+	set_f(e, "flagging", clampf(flag_eff, -2.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + bpb * 0.5f, 0.0f, 2.0f));
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
@@ -1154,6 +1165,9 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	}
 
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
+	/* Tension wobble: slow and incommensurate (0.37 Hz and 0.11 Hz). */
+	f->flag_phase1 = fmod(f->flag_phase1 + 2.0 * NS_PI * 0.37 * dt, 2.0 * NS_PI);
+	f->flag_phase2 = fmod(f->flag_phase2 + 2.0 * NS_PI * 0.11 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
 	if (f->degauss > 0.0f) {
@@ -1361,6 +1375,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_V_ROLL_SPEED 0.0
 #define DEF_H_JITTER 0.0
 #define DEF_FLAGGING 0.0
+#define DEF_FLAG_WAVE 0.0
 #define DEF_HEAD_SWITCH 0.0
 #define DEF_DROPOUT 0.0
 #define DEF_DROPOUT_MODE 0
@@ -1506,7 +1521,8 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_property_t *pk = ctv_add_float_slider(tp, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01,
 						  DEF_PEAKING);
 	ctv_add_tip_note(pk, obs_module_text("CompositeTV.Peaking.Tip"));
-	ctv_add_float_slider(tp, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(tp, "flagging", obs_module_text("CompositeTV.Flagging"), -1.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(tp, "flag_wave", obs_module_text("CompositeTV.FlagWave"), 0.0, 1.0, 0.01, DEF_FLAG_WAVE);
 	ctv_add_float_slider(tp, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
 			     DEF_HEAD_SWITCH);
 	ctv_add_float_slider(tp, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
@@ -1618,6 +1634,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
 	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
+	obs_data_set_default_double(s, "flag_wave", DEF_FLAG_WAVE);
 	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
 	obs_data_set_default_double(s, "dropout", DEF_DROPOUT);
 	obs_data_set_default_int(s, "dropout_mode", DEF_DROPOUT_MODE);
