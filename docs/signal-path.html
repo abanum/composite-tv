@@ -317,7 +317,8 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
 </div>
 
 <div class="wire"><div class="stem"></div><div class="fmt">
-  RGBA32F / 910×263 <span class="what">— コンポジット信号。</span>R=信号(±1.33→0..1格納) G=輝度(未使用) B,A=雑音素材<br>
+  RGBA32F / 910×263 <span class="what">— コンポジット信号。</span>R=信号(±1.33→0..1格納) G=輝度(未使用) B,A=雑音素材(複素ガウスのI/Q)<br>
+  <span class="taps">B,A は Encode→Detect 間だけの内部受け渡し。検波の瞬間に消費されて信号の一部になり、<b>Pack は R しか読まないため送出信号には含まれない</b>（Pack出力の B は常に 0）</span><br>
   <span class="taps"><span class="t">◧ タップ0「デッキ/送信側」</span> はここを取り出す</span>
 </div></div>
 
@@ -436,7 +437,8 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
   </g>
 </svg>
 <figcaption>1画像 = 1フィールド。910 × 262.5 × 59.94 ≒ 14.318 MS/s = 4fsc と規格がそのまま閉じる。
-16bit形式は R=上位バイト／G=下位バイト、復元は <span class="mono">composite = (v16/65535 − 0.5) / 0.375</span>。
+16bit形式は R=上位バイト／G=下位バイト（<b>B=0固定・Aは255</b>。内部の雑音素材B/Aはここへは来ない）、
+復元は <span class="mono">composite = (v16/65535 − 0.5) / 0.375</span>。
 ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ行を落とせばほぼ相互変換できる。</figcaption>
 </figure>
 </div>
