@@ -26,6 +26,7 @@ uniform texture2d track_tex;      // Decode: per-row sync/burst measurements (Tr
 uniform texture2d flywheel_tex;   // Display: smoothed horizontal AFC estimate (Flywheel pass)
 uniform float killer_auto;        // 1: colour killer decides from the measured burst
 uniform float afc_drift;          // free-run frequency error of the line oscillator [smp/line]
+uniform float afc_slop;           // 0: healthy AFC, 1: H-HOLD nearly lost
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -204,7 +205,7 @@ uniform float flash;              // discharge flash amount
  * value / TRACK_SPAN + 0.5, phases as rad / 2pi + 0.5. */
 #define SYNC_EDGE 21              /* where the leading edge nominally falls */
 #define SYNC_SEARCH 30            /* gate half-width the separator hunts over */
-#define TRACK_SPAN 64.0           /* offset storage scale, samples */
+#define TRACK_SPAN 160.0          /* offset storage scale, samples */
 #define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
@@ -852,17 +853,33 @@ float4 PSTrack(VertData v) : TARGET
 // to catch up with and paints the bend while it does, per-line jitter passes
 // through untouched, and as the sync sinks into noise the picture starts to
 // swim and finally tears diagonally - all from the same three terms.
+// afc_slop is the H-HOLD knob drifting off its sweet spot: the free-run error
+// grows, it leaks into the picture even while locked (the picture sits off
+// centre, as a misadjusted set does), and the loop gains an integral term
+// with too little damping - so instead of settling it RINGS down the field,
+// and the picture tears into the serpentine waves of a set about to lose
+// horizontal hold. At zero the second-order terms vanish and this is the
+// healthy flywheel again.
 float4 PSFlywheel(VertData v) : TARGET
 {
 	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
 
+	// A knob off its sweet spot has a fixed-sign frequency error (the 3.5),
+	// with the thermal wander on top; the loop is left badly underdamped.
+	float fr0 = afc_drift * (1.0 + 3.0 * afc_slop) + 3.5 * afc_slop;
+	float kp = AFC_GAIN * (1.0 - 0.8 * afc_slop);
+	float ki = 0.008 * afc_slop;
+
 	float h = 0.0;
+	float fr = fr0;
 	for (int r = 0; r <= row; ++r) {
 		float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
 		float4 t = image.Sample(pointClamp, uv);
 		float e = (t.r - 0.5) * TRACK_SPAN;
 		float q = t.a;
-		h += AFC_GAIN * q * (e - h) + (1.0 - q) * afc_drift;
+		float err = e - h;
+		h += ((1.0 - q) + q * afc_slop) * fr + kp * q * err;
+		fr += ki * q * err + (1.0 - q) * 0.02 * (fr0 - fr);
 	}
 
 	return float4(clamp(h / TRACK_SPAN + 0.5, 0.0, 1.0), 0.0, 0.0, 1.0);

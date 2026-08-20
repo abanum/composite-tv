@@ -120,6 +120,7 @@ struct composite_tv {
 	int screen_aspect;
 	float agc_level;
 	float agc_jitter;
+	float h_hold; /* how far the H-HOLD knob sits off its sweet spot */
 	float if_cutoff;
 	float luma_cutoff;
 	float chroma_gain;
@@ -467,6 +468,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->powered = obs_data_get_bool(s, "power");
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
+	f->h_hold = (float)obs_data_get_double(s, "h_hold");
 	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
 	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
 	/* Colour killer. Scenes saved before it became a mode carry the old
@@ -879,6 +881,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
+	set_f(e, "afc_slop", f->h_hold);
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
@@ -1383,6 +1386,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_ASPECT_MODE 0
 #define DEF_AGC_LEVEL 0.62
 #define DEF_AGC_JITTER 0.06
+#define DEF_H_HOLD 0.0
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
@@ -1484,6 +1488,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01, DEF_AGC_LEVEL);
 	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
 			     DEF_AGC_JITTER);
+	obs_property_t *hh =
+		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), 0.0, 1.0, 0.01, DEF_H_HOLD);
+	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
 	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
 			     DEF_IF_BANDWIDTH);
 
@@ -1646,6 +1653,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_int(s, "screen_aspect", DEF_SCREEN_ASPECT);
 	obs_data_set_default_double(s, "agc_level", DEF_AGC_LEVEL);
 	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
+	obs_data_set_default_double(s, "h_hold", DEF_H_HOLD);
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
