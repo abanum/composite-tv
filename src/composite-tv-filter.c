@@ -120,6 +120,7 @@ struct composite_tv {
 	int screen_aspect;
 	float agc_level;
 	float agc_jitter;
+	float h_hold; /* how far the H-HOLD knob sits off its sweet spot */
 	float if_cutoff;
 	float luma_cutoff;
 	float chroma_gain;
@@ -154,6 +155,7 @@ struct composite_tv {
 	float v_roll_speed;
 	float h_jitter;
 	float flagging;
+	float flag_wave; /* tension wobble: the bend waves ("flagwaving") */
 	float head_switch;
 	float dropout;
 	int dropout_mode; /* 0 none, 1 grey restorer, 2 1H delay line */
@@ -170,6 +172,16 @@ struct composite_tv {
 	double v_roll_pos;
 	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
+	double flag_phase1; /* the two slow oscillators of the tension wobble */
+	double flag_phase2;
+	double afc_phase1; /* wander of the line oscillator's free-run error */
+	double afc_phase2;
+	float fading;       /* depth of the propagation fade */
+	double fade_phase1; /* duct / scatter / polarization: slow and deep   */
+	double fade_phase2; /* interference (two-ray): the seconds-scale beat */
+	double fade_phase3; /* scintillation: the fast flutter, two of them   */
+	double fade_phase4;
+	double fade_phase5;       /* wander of the interfering path's excess delay  */
 	float burst_rx;           /* 1 -> 0 reception burst */
 	float burst_pb;           /* 1 -> 0 playback burst */
 	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
@@ -206,6 +218,12 @@ struct composite_tv {
 	int signal_format; /* 0 off, 1 16-bit R+G, 2 8-bit grayscale */
 	int signal_tap;    /* 0 encoder output, 1 detector output */
 	gs_texrender_t *pack;
+
+	/* receiver tracking: per-row sync/burst measurements and the AFC */
+	int color_killer_mode; /* 0 auto (burst-driven), 1 off, 2 forced mono */
+	gs_texrender_t *track;
+	gs_texrender_t *flywheel[2]; /* ping-pong: the oscillator state carries across fields */
+	int fly_idx;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -451,13 +469,17 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->powered = obs_data_get_bool(s, "power");
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
+	f->h_hold = (float)obs_data_get_double(s, "h_hold");
 	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
 	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
-	/* The colour killer is a plain gate, so fold it in here rather than
-	 * re-testing it on every pass. */
-	f->chroma_gain = obs_data_get_bool(s, "color_killer")
-				 ? 0.0f
-				 : (float)obs_data_get_double(s, "chroma_gain");
+	/* Colour killer. Scenes saved before it became a mode carry the old
+	 * checkbox; a ticked one meant "always monochrome", which is the forced
+	 * mode. Auto (the default) is decided per line by the measured burst in
+	 * the shader; only the forced mode still folds into the gain here. */
+	if (!obs_data_has_user_value(s, "color_killer_mode") && obs_data_get_bool(s, "color_killer"))
+		obs_data_set_int(s, "color_killer_mode", 2);
+	f->color_killer_mode = (int)obs_data_get_int(s, "color_killer_mode");
+	f->chroma_gain = (f->color_killer_mode == 2) ? 0.0f : (float)obs_data_get_double(s, "chroma_gain");
 	f->chroma_drift = (float)obs_data_get_double(s, "chroma_drift");
 
 	/* Everything the shader's FIR recurrences need from the cutoffs. */
@@ -499,11 +521,13 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->ghost_delay = rx ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
 	f->v_roll_speed = rx ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
 	f->h_jitter = rx ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
+	f->fading = rx ? (float)obs_data_get_double(s, "fading") : 0.0f;
 	f->beat_gain = rx ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
 	f->flagging = pb ? (float)obs_data_get_double(s, "flagging") : 0.0f;
+	f->flag_wave = pb ? (float)obs_data_get_double(s, "flag_wave") : 0.0f;
 	f->head_switch = pb ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
 	f->peaking = pb ? (float)obs_data_get_double(s, "peaking") : 0.0f;
 	f->dropout = pb ? (float)obs_data_get_double(s, "dropout") : 0.0f;
@@ -725,6 +749,9 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->display[0]);
 	free_texrender(&f->display[1]);
 	free_texrender(&f->pack);
+	free_texrender(&f->track);
+	free_texrender(&f->flywheel[0]);
+	free_texrender(&f->flywheel[1]);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -839,19 +866,41 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* Detect */
 	set_i(e, "field_seed", (int)(f->field_counter & 0xFFFFFu));
 	set_f(e, "if_cutoff", f->if_cutoff);
-	set_f(e, "field_strength", f->field_strength);
+	/* Fading, composed the way the propagation handbooks split it: a slow
+	 * deep swell (duct, scatter, polarization), a seconds-scale beat from
+	 * two-ray interference, and the fast small flutter of scintillation.
+	 * Everything downstream reacts on its own: the snow breathes, colour
+	 * drops in and out at the killer threshold, and the horizontal lock
+	 * swims whenever a dip crosses the margin. */
+	float fs_eff = f->field_strength;
+	float fade_dip = 0.0f;
+	if (f->fading > 0.0f) {
+		float fw = 0.50f * (float)sin(f->fade_phase1) + 0.35f * (float)sin(f->fade_phase2) +
+			   0.15f * (0.6f * (float)sin(f->fade_phase3) + 0.4f * (float)sin(f->fade_phase4));
+		fade_dip = 0.5f + 0.5f * fw; /* 0 = crest, 1 = deepest */
+		fs_eff *= clampf(1.0f - f->fading * fade_dip, 0.0f, 1.0f);
+	}
+	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
+	set_f(e, "afc_slop", f->h_hold);
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
-	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * f->field_strength);
-	set_f(e, "det_blend", smoothstepf(0.0f, 0.35f, f->field_strength));
+	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
+	set_f(e, "det_blend", smoothstepf(0.0f, 0.35f, fs_eff));
 	/* Decode. The free-running oscillator only rotates the hue in the
 	 * no-signal limit - with a picture the receiver locks to the burst. */
 	set_f(e, "chroma_cutoff", (float)(CHROMA_DEMOD_LPF_HZ / SAMPLE_RATE_HZ));
 	set_f(e, "chroma_gain", f->chroma_gain);
-	set_f(e, "cyc_phase",
-	      (float)f->chroma_phase_acc * (1.0f - smoothstepf(0.0f, 0.08f, f->field_strength)));
+	/* The free-run drift is no longer gated by the field strength here: the
+	 * decoder blends it in by the measured burst quality, which is the same
+	 * decision a real oscillator makes - and for the same reason. */
+	set_f(e, "cyc_phase", (float)f->chroma_phase_acc);
+	set_f(e, "killer_auto", f->color_killer_mode == 0 ? 1.0f : 0.0f);
+	/* Free-run frequency error of the line oscillator, in samples per line:
+	 * only matters when the separator stops trusting the sync. */
+	set_f(e, "afc_drift",
+	      0.35f * (0.6f * (float)sin(f->afc_phase1) + 0.4f * (float)sin(f->afc_phase2)));
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
@@ -913,15 +962,35 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * alone and a playback burst leaves the aerial alone. */
 	const float brx = f->burst_rx;
 	const float bpb = f->burst_pb;
-	set_f(e, "ghost_gain", f->ghost_gain);
-	set_f(e, "ghost_delay", f->ghost_delay);
+	/* Two-ray physics of interference fading: a deep dip means a second path
+	 * of nearly equal strength arriving in antiphase - and a path like that
+	 * IS a ghost. So as the fade approaches its trough, an echo stands up,
+	 * on the user's own ghost path if one is set, else on a wandering path
+	 * of its own. The wander is the reflection point moving. */
+	float gg = f->ghost_gain;
+	float gd = f->ghost_delay;
+	if (f->fading > 0.0f) {
+		float two_ray = f->fading * smoothstepf(0.55f, 0.95f, fade_dip);
+		gg += 0.35f * two_ray;
+		if (f->ghost_delay == 0.0f)
+			gd = 16.0f + 7.0f * (float)sin(f->fade_phase5);
+	}
+	set_f(e, "ghost_gain", gg);
+	set_f(e, "ghost_delay", gd);
 	set_f(e, "beat_gain", f->beat_gain);
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "v_roll", (float)f->v_roll_pos);
 	set_f(e, "vblank_lines", bar_lines(f));
 	set_f(e, "h_jitter", clampf(f->h_jitter + brx * 0.8f, 0.0f, 2.0f));
-	set_f(e, "flagging", clampf(f->flagging + bpb * 0.6f, 0.0f, 2.0f));
+	/* Flagging can bend either way - the sign of the tension error decides -
+	 * and a wandering tension makes the bend wave. The wobble is two slow
+	 * incommensurate sines, so the flag never settles into a loop, and the
+	 * burst pushes away from zero in whichever direction is already live. */
+	float flag_eff =
+		f->flagging + f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
+	flag_eff += bpb * 0.6f * (flag_eff < 0.0f ? -1.0f : 1.0f);
+	set_f(e, "flagging", clampf(flag_eff, -2.0f, 2.0f));
 	set_f(e, "head_switch", clampf(f->head_switch + bpb * 0.5f, 0.0f, 2.0f));
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
@@ -1141,6 +1210,21 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	}
 
 	f->beat_phase = fmod(f->beat_phase + 2.0 * NS_PI * 0.7 * dt, 2.0 * NS_PI);
+	/* Tension wobble: slow and incommensurate (0.37 Hz and 0.11 Hz). */
+	f->flag_phase1 = fmod(f->flag_phase1 + 2.0 * NS_PI * 0.37 * dt, 2.0 * NS_PI);
+	f->flag_phase2 = fmod(f->flag_phase2 + 2.0 * NS_PI * 0.11 * dt, 2.0 * NS_PI);
+	/* The line oscillator's free-run error wanders even more slowly - a
+	 * warm resistor here, a cold capacitor there. */
+	f->afc_phase1 = fmod(f->afc_phase1 + 2.0 * NS_PI * 0.043 * dt, 2.0 * NS_PI);
+	f->afc_phase2 = fmod(f->afc_phase2 + 2.0 * NS_PI * 0.013 * dt, 2.0 * NS_PI);
+	/* Propagation fading, one oscillator per mechanism: the duct breathes
+	 * over tens of seconds, two-ray interference beats over seconds, and
+	 * scintillation flutters around a second. */
+	f->fade_phase1 = fmod(f->fade_phase1 + 2.0 * NS_PI * 0.027 * dt, 2.0 * NS_PI);
+	f->fade_phase2 = fmod(f->fade_phase2 + 2.0 * NS_PI * 0.17 * dt, 2.0 * NS_PI);
+	f->fade_phase3 = fmod(f->fade_phase3 + 2.0 * NS_PI * 1.3 * dt, 2.0 * NS_PI);
+	f->fade_phase4 = fmod(f->fade_phase4 + 2.0 * NS_PI * 0.47 * dt, 2.0 * NS_PI);
+	f->fade_phase5 = fmod(f->fade_phase5 + 2.0 * NS_PI * 0.031 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
 	if (f->degauss > 0.0f) {
@@ -1209,6 +1293,29 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		return;
 	}
 
+	/* Receiver tracking: measure sync and burst per row, then run the AFC
+	 * over the measurements. Two 263x1 passes - the cost is a rounding
+	 * error, and everything the decoder and the tube know about timing and
+	 * colour lock now comes from here rather than from the encoder. */
+	ensure_tr(&f->track, GS_RGBA32F);
+	ensure_tr(&f->flywheel[0], GS_RGBA32F);
+	ensure_tr(&f->flywheel[1], GS_RGBA32F);
+	gs_texture_t *trk = det ? run_pass(f, e, f->track, SIG_H, 1, "Track", det, cx, cy) : NULL;
+	/* The line oscillator's state continues across fields: last field's
+	 * output seeds this field's recurrence, ping-pong style. On the very
+	 * first frame there is no history and the seed is whatever gets read
+	 * from the fallback texture - the loop pulls itself in within a field,
+	 * exactly like a set warming up. */
+	gs_texture_t *fly_prev = gs_texrender_get_texture(f->flywheel[1 - f->fly_idx]);
+	set_tex(e, "flywheel_prev", fly_prev ? fly_prev : input_tex);
+	gs_texture_t *fly = trk ? run_pass(f, e, f->flywheel[f->fly_idx], SIG_H, 1, "Flywheel", trk, cx, cy) : NULL;
+	/* Only alternate when something was actually written, so a skipped
+	 * frame can never point the seed at a buffer that was left stale. */
+	if (fly)
+		f->fly_idx ^= 1;
+	set_tex(e, "track_tex", trk ? trk : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
@@ -1226,6 +1333,14 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * no other reason to see. Bound whether or not it is switched on: the
 	 * sampler is in the compiled shader either way. */
 	set_tex(e, "scope_src", det ? det : field_cur);
+	/* gs_technique_end() cleared EVERY effect parameter when the Decode
+	 * technique finished - textures included - so the bindings made above
+	 * the Decode pass are gone by now. Without this re-bind the display
+	 * pass samples unbound (all-zero) textures, decodes them as an AFC
+	 * estimate of "half span left", and the whole picture lands a fifth of
+	 * a line to the right. */
+	set_tex(e, "track_tex", trk ? trk : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
@@ -1293,11 +1408,12 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_ASPECT_MODE 0
 #define DEF_AGC_LEVEL 0.62
 #define DEF_AGC_JITTER 0.06
+#define DEF_H_HOLD 0.0
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
 #define DEF_CHROMA_GAIN 0.70
-#define DEF_COLOR_KILLER false
+#define DEF_COLOR_KILLER_MODE 0
 #define DEF_CHROMA_DRIFT 0.6
 #define DEF_CONTRAST 1.15
 #define DEF_BRIGHTNESS -0.02
@@ -1336,7 +1452,9 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_GHOST_DELAY 24.0
 #define DEF_V_ROLL_SPEED 0.0
 #define DEF_H_JITTER 0.0
+#define DEF_FADING 0.0
 #define DEF_FLAGGING 0.0
+#define DEF_FLAG_WAVE 0.0
 #define DEF_HEAD_SWITCH 0.0
 #define DEF_DROPOUT 0.0
 #define DEF_DROPOUT_MODE 0
@@ -1392,6 +1510,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01, DEF_AGC_LEVEL);
 	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
 			     DEF_AGC_JITTER);
+	obs_property_t *hh =
+		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), 0.0, 1.0, 0.01, DEF_H_HOLD);
+	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
 	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
 			     DEF_IF_BANDWIDTH);
 
@@ -1399,7 +1520,12 @@ static obs_properties_t *ntsc_get_properties(void *data)
 			     DEF_LUMA_BANDWIDTH);
 	ctv_add_float_slider(p, "chroma_gain", obs_module_text("CompositeTV.ChromaGain"), 0.0, 2.0, 0.01,
 			     DEF_CHROMA_GAIN);
-	ctv_add_bool(p, "color_killer", obs_module_text("CompositeTV.ColorKiller"), DEF_COLOR_KILLER);
+	obs_property_t *ck = obs_properties_add_list(p, "color_killer_mode", obs_module_text("CompositeTV.ColorKiller"),
+						     OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Auto"), 0);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Off"), 1);
+	obs_property_list_add_int(ck, obs_module_text("CompositeTV.ColorKiller.Force"), 2);
+	ctv_set_list_default_tip(ck, DEF_COLOR_KILLER_MODE);
 	ctv_add_float_slider(p, "chroma_drift", obs_module_text("CompositeTV.ChromaDrift"), 0.0, 3.0, 0.05,
 			     DEF_CHROMA_DRIFT);
 	ctv_add_float_slider(p, "contrast", obs_module_text("CompositeTV.Contrast"), 0.3, 2.0, 0.01, DEF_CONTRAST);
@@ -1468,6 +1594,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
 			     DEF_V_ROLL_SPEED);
 	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
+	obs_property_t *fd =
+		ctv_add_float_slider(g, "fading", obs_module_text("CompositeTV.Fading"), 0.0, 1.0, 0.01, DEF_FADING);
+	ctv_add_tip_note(fd, obs_module_text("CompositeTV.Fading.Tip"));
 	ctv_add_float_slider(g, "beat_gain", obs_module_text("CompositeTV.BeatGain"), 0.0, 0.5, 0.01, DEF_BEAT_GAIN);
 	ctv_add_float_slider(g, "beat_freq", obs_module_text("CompositeTV.BeatFreq"), 0.1, 5.0, 0.01, DEF_BEAT_FREQ);
 	ctv_add_float_slider(g, "burst_len", obs_module_text("CompositeTV.BurstLen"), 0.1, 2.0, 0.05, DEF_BURST_LEN);
@@ -1477,7 +1606,8 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_property_t *pk = ctv_add_float_slider(tp, "peaking", obs_module_text("CompositeTV.Peaking"), 0.0, 1.0, 0.01,
 						  DEF_PEAKING);
 	ctv_add_tip_note(pk, obs_module_text("CompositeTV.Peaking.Tip"));
-	ctv_add_float_slider(tp, "flagging", obs_module_text("CompositeTV.Flagging"), 0.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(tp, "flagging", obs_module_text("CompositeTV.Flagging"), -1.0, 1.0, 0.01, DEF_FLAGGING);
+	ctv_add_float_slider(tp, "flag_wave", obs_module_text("CompositeTV.FlagWave"), 0.0, 1.0, 0.01, DEF_FLAG_WAVE);
 	ctv_add_float_slider(tp, "head_switch", obs_module_text("CompositeTV.HeadSwitch"), 0.0, 1.0, 0.01,
 			     DEF_HEAD_SWITCH);
 	ctv_add_float_slider(tp, "dropout", obs_module_text("CompositeTV.Dropout"), 0.0, 1.0, 0.01, DEF_DROPOUT);
@@ -1545,10 +1675,11 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_int(s, "screen_aspect", DEF_SCREEN_ASPECT);
 	obs_data_set_default_double(s, "agc_level", DEF_AGC_LEVEL);
 	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
+	obs_data_set_default_double(s, "h_hold", DEF_H_HOLD);
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
-	obs_data_set_default_bool(s, "color_killer", DEF_COLOR_KILLER);
+	obs_data_set_default_int(s, "color_killer_mode", DEF_COLOR_KILLER_MODE);
 	obs_data_set_default_double(s, "chroma_drift", DEF_CHROMA_DRIFT);
 	obs_data_set_default_double(s, "contrast", DEF_CONTRAST);
 	obs_data_set_default_double(s, "brightness", DEF_BRIGHTNESS);
@@ -1588,7 +1719,9 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
 	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
 	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
+	obs_data_set_default_double(s, "fading", DEF_FADING);
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);
+	obs_data_set_default_double(s, "flag_wave", DEF_FLAG_WAVE);
 	obs_data_set_default_double(s, "head_switch", DEF_HEAD_SWITCH);
 	obs_data_set_default_double(s, "dropout", DEF_DROPOUT);
 	obs_data_set_default_int(s, "dropout_mode", DEF_DROPOUT_MODE);
