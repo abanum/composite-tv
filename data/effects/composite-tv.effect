@@ -148,9 +148,38 @@ uniform float flash;              // discharge flash amount
 #define LUMA_R 8
 #define CHROMA_R 12
 
-/* Composite storage encoding shared by the encoder and everything downstream */
+/* Composite storage encoding shared by the encoder and everything downstream.
+ * The detector output uses it too, because sync sits at -0.4 and an unsigned
+ * texture cannot hold that raw. */
 #define STORE_BIAS 0.5
 #define STORE_SCALE 0.375
+
+/* Full-line raster geometry (fixed by the NTSC standard, so compile-time on
+ * both sides - the C file carries the same numbers). One line is 910 samples
+ * at 4fsc = 63.556us; a field is 20 VBI rows followed by 243 active rows,
+ * approximating the standard's 262.5 (the half line is bookkeeping for the
+ * receiver's interlace, not something this raster has to draw).
+ *
+ * Two invariants the picture depends on - keep them or the decoder breaks:
+ *   ACTIVE_OFFSET % 4 == 0 : 0.5*PI*156 = 78*PI = 0 (mod 2*PI), so the
+ *       subcarrier phase at active sample na equals the phase at signal
+ *       sample na + ACTIVE_OFFSET and the decoder needs no phase shift.
+ *       Break it and every hue on screen rotates.
+ *   VBI_ROWS % 2 == 0 : linePhaseOf(row) == linePhaseOf(row - VBI_ROWS),
+ *       so the per-line phase alternation agrees between the two spaces.
+ *       Break it and chroma inverts. */
+#define SIG_W 910
+#define SIG_H 263
+#define VBI_ROWS 20
+#define ACTIVE_OFFSET 156         /* front porch 21 + sync 67 + back porch 68 */
+#define FRONT_PORCH 21            /* 1.5us */
+#define SYNC_W 67                 /* 4.7us */
+#define BURST_START 107           /* breezeway after the sync trailing edge */
+#define BURST_END 143             /* nine subcarrier cycles */
+#define HALF_LINE 455             /* VBI pulses run at twice line rate */
+#define EQ_W 33                   /* equalizing pulse, 2.3us */
+#define SYNC_LEVEL (-0.4)         /* -40 IRE; blanking = 0, peak white = 1 */
+#define BURST_AMP 0.2             /* +/-20 IRE */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -206,6 +235,13 @@ int2 fieldCoord(float2 uv)
 		    clamp((int)floor(uv.y * field_size.y), 0, (int)field_size.y - 1));
 }
 
+// The same for the full-line signal raster (Encode and Detect run on it).
+int2 sigCoord(float2 uv)
+{
+	return int2((int)floor(uv.x * (float)SIG_W),
+		    clamp((int)floor(uv.y * (float)SIG_H), 0, SIG_H - 1));
+}
+
 // Subcarrier reference phase at the head of a scan line. Encode and decode
 // must agree exactly, so both go through this.
 float linePhaseOf(int ln)
@@ -213,19 +249,62 @@ float linePhaseOf(int ln)
 	return field_base_phase + ((fmod((float)ln, 2.0) >= 0.5) ? PI : 0.0);
 }
 
-// The composite field is stored as amplitude * STORE_SCALE + STORE_BIAS so it
-// fits an unsigned texture; these two read it back raw and in signal units.
+// The signal rasters (encoder output, and now the detector output too) are
+// stored as amplitude * STORE_SCALE + STORE_BIAS so they fit an unsigned
+// texture; these two read them back raw and in signal units. Coordinates are
+// signal-space: 910 samples across the full line, VBI rows included.
 float compAt(int n, int ln)
 {
-	int nx = clamp(n, 0, (int)field_size.x - 1);
-	int ny = clamp(ln, 0, (int)field_size.y - 1);
-	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ny + 0.5) / field_size.y);
+	int nx = clamp(n, 0, SIG_W - 1);
+	int ny = clamp(ln, 0, SIG_H - 1);
+	float2 uv = float2(((float)nx + 0.5) / (float)SIG_W, ((float)ny + 0.5) / (float)SIG_H);
 	return image.Sample(pointClamp, uv).r;
 }
 
 float compositeAt(int n, int ln)
 {
 	return (compAt(n, ln) - STORE_BIAS) / STORE_SCALE;
+}
+
+// Sync structure of the full-line raster, in video units (blanking = 0, sync
+// tip = SYNC_LEVEL). Rows 0..8 carry the vertical interval - equalizing
+// pulses, the serrated vertical sync, equalizing pulses again, all at twice
+// line rate so a receiver keeps horizontal lock through the field change.
+// Every other row gets the ordinary horizontal pulse on its front porch.
+float syncBaseAt(int n, int row)
+{
+	if (row < 9) {
+		float ph = fmod((float)n, (float)HALF_LINE);
+		if (row >= 3 && row < 6) {
+			// Serrated vertical sync: held low for the whole half line
+			// except the 4.7us serration restoring blanking before each
+			// half-line boundary.
+			if (ph < (float)(HALF_LINE - SYNC_W))
+				return SYNC_LEVEL;
+		} else if (ph >= (float)FRONT_PORCH && ph < (float)(FRONT_PORCH + EQ_W)) {
+			// Equalizing pulses: half the ordinary width, at the ordinary
+			// leading-edge position within each half line.
+			return SYNC_LEVEL;
+		}
+		return 0.0;
+	}
+	if (n >= FRONT_PORCH && n < FRONT_PORCH + SYNC_W)
+		return SYNC_LEVEL;
+	return 0.0;
+}
+
+// Colour burst on the back porch: nine subcarrier cycles for the receiver to
+// lock its reference to. Chroma here is modulated as I*cos(th) + Q*sin(th)
+// with th = w*t + 33 deg (burst_phase folds the 33 in), and the NTSC burst
+// sits at w*t + 180 deg = th + 147 deg. That relative angle is what makes an
+// outside decoder reproduce the hues; our own decoder never looks at it.
+// No burst during the nine vertical-pulse rows, as per the standard.
+float burstAt(int n, int row)
+{
+	if (row < 9 || n < BURST_START || n >= BURST_END)
+		return 0.0;
+	float th = 0.5 * PI * (float)n + linePhaseOf(row) + burst_phase;
+	return BURST_AMP * sin(th + 2.5656340);
 }
 
 // Float-only hash (Dave Hoskins, hash13). Avoids integer/uint ops so the effect
@@ -242,8 +321,7 @@ float hash13(float3 p3)
 // detector reads it back instead of regenerating it for all of its taps.
 float2 noiseIQ(int ln, int n)
 {
-	int w  = (int)field_size.x;
-	int nx = (n < 0) ? n + w : ((n >= w) ? n - w : n);
+	int nx = (n < 0) ? n + SIG_W : ((n >= SIG_W) ? n - SIG_W : n);
 	float3 p = float3((float)nx, (float)ln, (float)field_seed);
 	float u1 = max(hash13(p), 1.0e-7);
 	float u2 = hash13(p + float3(37.0, 17.0, 5.0));
@@ -281,9 +359,19 @@ float3 sampleRGB(float sx, float rowY, float scale, float rowOut)
 
 float4 PSEncode(VertData v) : TARGET
 {
-	int2  fc  = fieldCoord(v.uv);
-	int   n   = fc.x;
-	int   ln  = fc.y;
+	int2 sc   = sigCoord(v.uv);
+	int  n    = sc.x;
+	int  srow = sc.y;
+
+	// The line skeleton exists everywhere; picture only inside the active
+	// window. The invariants at the SIG defines are what let the active
+	// content keep using its own coordinates for the subcarrier phase.
+	float composite = syncBaseAt(n, srow) + burstAt(n, srow);
+	float y = 0.0;
+
+	if (srow >= VBI_ROWS && n >= ACTIVE_OFFSET) {
+	int   ln  = srow - VBI_ROWS;
+	float sx  = ((float)(n - ACTIVE_OFFSET) + 0.5) / field_size.x;
 	float du  = 1.0 / field_size.x;
 	float row = ((float)ln + 0.5) / field_size.y;
 
@@ -305,8 +393,8 @@ float4 PSEncode(VertData v) : TARGET
 	float Ai = 2.0 * PI * cutoff_i;
 	float Aq = 2.0 * PI * cutoff_q;
 
-	float3 yiq0 = rgb2yiq(sampleRGB(v.uv.x, rowY, scale, rowOut));
-	float y  = yiq0.x * (2.0 * luma_cutoff);
+	float3 yiq0 = rgb2yiq(sampleRGB(sx, rowY, scale, rowOut));
+	y = yiq0.x * (2.0 * luma_cutoff);
 	float ci = yiq0.y * (2.0 * cutoff_i);
 	float cq = yiq0.z * (2.0 * cutoff_q);
 	float ny = 2.0 * luma_cutoff;
@@ -327,8 +415,8 @@ float4 PSEncode(VertData v) : TARGET
 
 	for (int k = 1; k <= R_Q; ++k) {
 		float fk = (float)k;
-		float3 yp = rgb2yiq(sampleRGB(v.uv.x + fk * du, rowY, scale, rowOut));
-		float3 ym = rgb2yiq(sampleRGB(v.uv.x - fk * du, rowY, scale, rowOut));
+		float3 yp = rgb2yiq(sampleRGB(sx + fk * du, rowY, scale, rowOut));
+		float3 ym = rgb2yiq(sampleRGB(sx - fk * du, rowY, scale, rowOut));
 
 		sinQ = rotStep(sinQ, fir_rot_q);
 		hamQ = rotStep(hamQ, HAM27);
@@ -374,21 +462,27 @@ float4 PSEncode(VertData v) : TARGET
 	ci /= max(ni, 1.0e-6);
 	cq /= max(nq, 1.0e-6);
 
+	// n is the signal-space sample, but ACTIVE_OFFSET is a multiple of four
+	// subcarrier quarter-cycles, so this equals the active-space phase and
+	// runs continuously into the burst written on the porch.
 	float phase = 0.5 * PI * (float)n + linePhaseOf(ln) + burst_phase;
-	float composite = y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
+	composite += y + enc_chroma_gain * (ci * cos(phase) + cq * sin(phase));
+	}
 
 	// Interfering carrier (herringbone). Phase runs off the absolute sample
 	// position, so it shears line to line and produces the classic diagonal
 	// pattern - and rainbow cross-colour when it lands near the subcarrier.
+	// An interfering transmitter does not pause for blanking, so this rides
+	// the full line.
 	if (beat_gain > 0.0) {
-		float totalN = (float)ln * 910.0 + (float)n;   // 1H = 910 samples
+		float totalN = (float)srow * (float)SIG_W + (float)n;
 		composite += beat_gain * sin(2.0 * PI * beat_norm * totalN + beat_phase);
 	}
 
 	float stored = composite * STORE_SCALE + STORE_BIAS;
 	// The detector's complex IF noise rides along in the spare channels,
 	// generated once per texel here instead of once per tap there.
-	float2 nn = noiseIQ(ln, n) * 0.125 + 0.5;
+	float2 nn = noiseIQ(srow, n) * 0.125 + 0.5;
 	return float4(clamp(stored, 0.0, 1.0), y, nn.x, nn.y);
 }
 
@@ -400,9 +494,8 @@ float4 PSEncode(VertData v) : TARGET
 // it back, wrapping the column exactly like the generator does.
 float2 noiseAt(int n, int ln)
 {
-	int w  = (int)field_size.x;
-	int nx = (n < 0) ? n + w : ((n >= w) ? n - w : n);
-	float2 uv = float2(((float)nx + 0.5) / field_size.x, ((float)ln + 0.5) / field_size.y);
+	int nx = (n < 0) ? n + SIG_W : ((n >= SIG_W) ? n - SIG_W : n);
+	float2 uv = float2(((float)nx + 0.5) / (float)SIG_W, ((float)ln + 0.5) / (float)SIG_H);
 	return image.Sample(pointClamp, uv).ba * 8.0 - 4.0;
 }
 
@@ -475,9 +568,9 @@ float dropoutAt(int row, float x, out float age, out float startLine, out float 
 
 float4 PSDetect(VertData v) : TARGET
 {
-	int2 fc = fieldCoord(v.uv);
-	int  n  = fc.x;
-	int  ln = fc.y;
+	int2 sc = sigCoord(v.uv);
+	int  n  = sc.x;
+	int  ln = sc.y; /* signal row: VBI rows first, active from VBI_ROWS on */
 
 	// Band-limit the noise with the IF filter. Same recurrence-generated
 	// even weights as the encoder; the normalisation constant only depends
@@ -505,7 +598,7 @@ float4 PSDetect(VertData v) : TARGET
 	// having to say so.
 	if (dropout_prob > 0.0 || damage_len > 0.0) {
 		float age, startRow, span;
-		float a = dropoutAt(ln, ((float)n + 0.5) / field_size.x, age, startRow, span);
+		float a = dropoutAt(ln, ((float)n + 0.5) / (float)SIG_W, age, startRow, span);
 		if (a > 0.0) {
 			float lost;
 			if (dropout_mode > 1.5) {
@@ -538,8 +631,8 @@ float4 PSDetect(VertData v) : TARGET
 	// that goes with it is a timing fault and stays with the beam; this is
 	// the part that is in the signal, and it uses the same band shape so the
 	// two line up.
-	if (head_switch > 0.0) {
-		float fromBottom = 1.0 - ((float)ln + 0.5) / field_size.y;
+	if (head_switch > 0.0 && ln >= VBI_ROWS) {
+		float fromBottom = 1.0 - ((float)(ln - VBI_ROWS) + 0.5) / field_size.y;
 		float band = head_switch * 0.05;
 		if (fromBottom < band) {
 			float depth = saturate(1.0 - fromBottom / max(band, 1.0e-4));
@@ -564,24 +657,36 @@ float4 PSDetect(VertData v) : TARGET
 	float snowDetected = 1.0 - env * (snow_level / 1.2533141) * wobble;
 	float detected = lerp(snowDetected, videoDetected, det_blend);
 
-	return float4(clamp(detected, 0.0, 1.0), 0.0, 0.0, 1.0);
+	// Stored, not clamped to video levels: sync sits at -0.4 and has to
+	// survive - the decoder and the scope both decode this encoding back.
+	return float4(clamp(detected * STORE_SCALE + STORE_BIAS, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
 
 //============================================================================
 // Decode : Y/C separation + synchronous chroma demodulation -> RGB
 //============================================================================
 
+// The detector hands over the full signal raster in storage encoding; the
+// decoder addresses it in active-picture coordinates. Deliberately NOT
+// clamped to the active window: taps running off the left edge read the
+// burst and the back porch, and the top row's comb partner is VBI blanking -
+// exactly what a real receiver's filters see.
+float detAt(int na, int ln)
+{
+	return (compAt(na + ACTIVE_OFFSET, ln + VBI_ROWS) - STORE_BIAS) / STORE_SCALE;
+}
+
 // Comb-filtered luma (x) and chroma (y) contributions of one sample column.
 // sl keeps C out of the luma, sc keeps Y out of the chroma.
 float2 combSample(int nx, int ln)
 {
-	float c0 = compAt(nx, ln);
+	float c0 = detAt(nx, ln);
 	float cm1 = 0.0;
 	float cp1 = 0.0;
 	if (yc_mode >= 0.5)
-		cm1 = compAt(nx, ln - 1);
+		cm1 = detAt(nx, ln - 1);
 	if (yc_mode >= 1.5)
-		cp1 = compAt(nx, ln + 1);
+		cp1 = detAt(nx, ln + 1);
 
 	float sl, sc;
 	if (yc_mode < 0.5) {
@@ -762,9 +867,11 @@ float3 shadowMask(float2 suv)
 // rare, so two lines of history is enough to look for one.
 float dropoutSkew(int li)
 {
-	// The defect belongs to the signal, which is counted in field rows, while
-	// the beam is counted in drawn lines.
-	float row = floor((float)li * field_row_step);
+	// The defect belongs to the signal, which is counted in signal rows (VBI
+	// included), while the beam is counted in drawn lines. This conversion
+	// must match dropoutAt and the CPU's damage_line, or the skew detaches
+	// from the streak that caused it.
+	float row = floor((float)li * field_row_step) + (float)VBI_ROWS;
 	float o = 0.0;
 	for (int k = 1; k <= 2; ++k) {
 		float l0 = row - (float)k;
@@ -1018,8 +1125,8 @@ float4 PSDisplay(VertData v) : TARGET
 	// power state cannot hide it.
 	if (scope_on > 0.5) {
 		// Which line the trace comes from, marked on the picture itself so
-		// the two can be read together.
-		if (floor((float)base * field_row_step) == floor(scope_line))
+		// the two can be read together. scope_line arrives in signal rows.
+		if (floor((float)base * field_row_step) + (float)VBI_ROWS == floor(scope_line))
 			outCol = lerp(outCol, float3(1.0, 0.15, 0.15), 0.30);
 
 		// The panel sits away from the line it is tracing, so the marker and
@@ -1029,20 +1136,21 @@ float4 PSDisplay(VertData v) : TARGET
 		if (v.uv.y > y0 && v.uv.y < y1) {
 			// The trace is drawn between this column's sample and the
 			// next one's, so a steep edge joins up instead of leaving
-			// the line in pieces.
-			float row = (floor(scope_line) + 0.5) / field_size.y;
+			// the line in pieces. The x axis is the whole 910-sample
+			// line: porch, sync and burst included.
+			float row = (floor(scope_line) + 0.5) / (float)SIG_H;
 			float dx = 1.0 / max(output_size.x, 1.0);
-			float s0 = scope_src.Sample(pointClamp, float2(v.uv.x, row)).r;
-			float s1 = scope_src.Sample(pointClamp, float2(v.uv.x + dx, row)).r;
+			float s0 = (scope_src.Sample(pointClamp, float2(v.uv.x, row)).r - STORE_BIAS) / STORE_SCALE;
+			float s1 = (scope_src.Sample(pointClamp, float2(v.uv.x + dx, row)).r - STORE_BIAS) / STORE_SCALE;
 
-			// Detected video runs 0 (black) to 1 (white); the margin
-			// leaves the graticule lines clear of the edges.
-			float span = 1.2;
-			float val = 1.1 - (v.uv.y - y0) / (y1 - y0) * span;
+			// Video runs 0 (black) to 1 (white) with sync down at -0.4;
+			// the margin leaves the graticule lines clear of the edges.
+			float span = 1.6;
+			float val = 1.15 - (v.uv.y - y0) / (y1 - y0) * span;
 			float w = 1.5 * span / ((y1 - y0) * max(output_size.y, 1.0));
 
 			outCol = lerp(outCol, float3(0.0, 0.02, 0.03), 0.82);
-			if (abs(val) < w || abs(val - 1.0) < w)
+			if (abs(val) < w || abs(val - 1.0) < w || abs(val - SYNC_LEVEL) < w)
 				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.85);
 			if (val > min(s0, s1) - w && val < max(s0, s1) + w)
 				outCol = float3(0.25, 1.0, 0.35);

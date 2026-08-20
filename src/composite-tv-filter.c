@@ -39,6 +39,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 /* Vertical blanking is whatever the frame is not active picture: 39 lines. */
 #define VBLANK_LINES (TOTAL_LINES - ACTIVE_LINES)
 #define SAMPLE_RATE_HZ 14318180.0 /* 4 * 3.579545 MHz */
+
+/* Full-line signal raster: 910 samples per line (63.556us), a field of 20 VBI
+ * rows plus the 243 active rows. Must match the SIG_* defines in the effect,
+ * including its two invariants: the 156-sample active offset is a multiple of
+ * four (so the subcarrier phase agrees between active and signal coordinates)
+ * and the VBI row count is even (so the per-line phase alternation does). */
+#define SIG_W 910
+#define SIG_H 263
+#define SIG_VBI_ROWS 20
+#define LINE_PERIOD_US (SIG_W * 1.0e6 / SAMPLE_RATE_HZ) /* 63.556 */
 #define BURST_PHASE_RAD (57.0 * NS_PI / 180.0)
 #define CHROMA_DEMOD_LPF_HZ 600000.0
 /* Settings are in MHz; the shader wants cutoffs normalised to the sample rate. */
@@ -48,7 +58,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * 0.5us can happen - the tape signal cannot fall away faster than that - and
  * the count falls off logarithmically as they get longer, so the short ones
  * dominate and the 300us ones are rare. */
-#define ACTIVE_LINE_US 52.7 /* active picture time of one NTSC line */
 #define DROPOUT_MIN_US 0.5
 #define DROPOUT_MAX_US 200.0
 
@@ -688,7 +697,9 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* The setting is a scan line of the 486-line frame, which is what the
 	 * viewer sees; the signal itself only has 243 rows per field, so two
 	 * neighbouring lines share one trace. */
-	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)));
+	/* The slider is a scan line of the 486-line frame; the shader wants the
+	 * signal row, which is the field row plus the VBI block above it. */
+	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)) + (float)SIG_VBI_ROWS);
 	/* Trace a line in the lower half and the panel moves out of its way. */
 	set_f(e, "scope_top", f->scope_line >= 241.0f ? 1.0f : 0.0f);
 	set_f(e, "aspect_mode", (float)f->aspect_mode);
@@ -797,7 +808,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 		prob = fminf(0.0018f * expf(9.3f * dop) / (float)FIELD_H, 0.25f);
 	}
 	set_f(e, "dropout_prob", prob);
-	set_f(e, "dropout_min", (float)(DROPOUT_MIN_US / ACTIVE_LINE_US));
+	set_f(e, "dropout_min", (float)(DROPOUT_MIN_US / LINE_PERIOD_US));
 	set_f(e, "dropout_span", (float)log(DROPOUT_MAX_US / DROPOUT_MIN_US));
 	set_f(e, "dropout_mode", (float)f->dropout_mode);
 	/* The crease is placed rather than rolled for: the slider is how many
@@ -805,7 +816,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * anything past that wraps onto the rows below. */
 	set_f(e, "damage_len", f->tape_damage * 2.0f);
 	double dpos = (double)f->tape_damage_pos + f->damage_pos;
-	set_f(e, "damage_line", floorf((float)(dpos - floor(dpos)) * (float)(FIELD_H - 1)));
+	set_f(e, "damage_line", floorf((float)(dpos - floor(dpos)) * (float)(FIELD_H - 1)) + (float)SIG_VBI_ROWS);
 
 	/* Degauss. Squaring the envelope makes the tail die away smoothly. */
 	const float dg = f->degauss * f->degauss * f->degauss_strength;
@@ -935,8 +946,8 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	/* 2) Encode -> 3) Detect -> 4) Decode. run_pass() applies the parameters
 	 * itself, which is what keeps the libobs clear-on-technique-end quirk
 	 * from being a rule anyone has to remember. */
-	gs_texture_t *comp = run_pass(f, e, f->composite, FIELD_W, FIELD_H, "Encode", input_tex, cx, cy);
-	gs_texture_t *det = run_pass(f, e, f->detector, FIELD_W, FIELD_H, "Detect", comp, cx, cy);
+	gs_texture_t *comp = run_pass(f, e, f->composite, SIG_W, SIG_H, "Encode", input_tex, cx, cy);
+	gs_texture_t *det = run_pass(f, e, f->detector, SIG_W, SIG_H, "Detect", comp, cx, cy);
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
