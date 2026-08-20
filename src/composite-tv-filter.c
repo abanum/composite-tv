@@ -1309,7 +1309,10 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	gs_texture_t *fly_prev = gs_texrender_get_texture(f->flywheel[1 - f->fly_idx]);
 	set_tex(e, "flywheel_prev", fly_prev ? fly_prev : input_tex);
 	gs_texture_t *fly = trk ? run_pass(f, e, f->flywheel[f->fly_idx], SIG_H, 1, "Flywheel", trk, cx, cy) : NULL;
-	f->fly_idx ^= 1;
+	/* Only alternate when something was actually written, so a skipped
+	 * frame can never point the seed at a buffer that was left stale. */
+	if (fly)
+		f->fly_idx ^= 1;
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
