@@ -25,6 +25,7 @@ uniform texture2d scope_src;      // Display: detected composite, for the debug 
 uniform texture2d track_tex;      // Decode: per-row sync/burst measurements (Track pass)
 uniform texture2d flywheel_tex;   // Display: smoothed horizontal AFC estimate (Flywheel pass)
 uniform float killer_auto;        // 1: colour killer decides from the measured burst
+uniform float afc_drift;          // free-run frequency error of the line oscillator [smp/line]
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -204,8 +205,7 @@ uniform float flash;              // discharge flash amount
 #define SYNC_EDGE 21              /* where the leading edge nominally falls */
 #define SYNC_SEARCH 30            /* gate half-width the separator hunts over */
 #define TRACK_SPAN 64.0           /* offset storage scale, samples */
-#define AFC_TAPS 32               /* flywheel memory, in lines */
-#define AFC_POLE 0.92             /* per-line decay = exp(-1/12): tau of 12 lines */
+#define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -796,58 +796,76 @@ float4 PSTrack(VertData v) : TARGET
 			syncErr = (float)sh;
 		}
 	}
+	// Lock quality: how much of the chosen window actually sits at sync
+	// level. A noise-picked window scatters around blanking and scores low;
+	// a real pulse holds its bottom. This is what the flywheel trusts.
+	float held = 0.0;
+	for (int m = 0; m < SYNC_W; ++m) {
+		if (compositeAt(SYNC_EDGE + (int)syncErr + m, row) < -0.25)
+			held += 1.0;
+	}
+	float q = saturate((held / (float)SYNC_W - 0.35) * 2.2);
+
 	// Burst gate, keyed off the measured edge. Correlating against the
 	// fixed-grid reference makes the result directly usable as the demod
 	// correction: for a burst at sin(theta + d) the two sums come out as
 	// C ~ sin(d), S ~ cos(d), so d = atan2(C, S).
 	float C = 0.0;
 	float S = 0.0;
+	// The magnitude of a noise correlation is biased upward - in heavy snow
+	// it reads LARGER than a real burst - so a second, burst-free window
+	// (the flat bottom of the sync pulse, full cycles of carrier sum to
+	// zero over DC) measures the noise floor and the detector reports the
+	// margin above it. This is what keeps the colour killer honest.
+	float C2 = 0.0;
+	float S2 = 0.0;
 	for (int k = 0; k < 36; ++k) {
 		int n = BURST_START + (int)syncErr + k;
 		float s = compositeAt(n, row);
 		float th = 0.5 * PI * (float)n + linePhaseOf(row) + burst_phase + 2.5656340;
 		C += s * cos(th);
 		S += s * sin(th);
+
+		int n2 = SYNC_EDGE + (int)syncErr + 15 + k;
+		float s2 = compositeAt(n2, row);
+		float th2 = 0.5 * PI * (float)n2 + linePhaseOf(row) + burst_phase + 2.5656340;
+		C2 += s2 * cos(th2);
+		S2 += s2 * sin(th2);
 	}
 	float amp = (2.0 / 36.0) * sqrt(C * C + S * S);
+	float ref = (2.0 / 36.0) * sqrt(C2 * C2 + S2 * S2);
 	float dphi = atan2(C, S);
 
-	// A: how deep the found pulse is vs its nominal -0.4 x 67 samples - a
-	// lock-quality figure for anything downstream that wants one.
-	float depth = saturate(-best / (0.4 * (float)SYNC_W));
-	return float4(syncErr / TRACK_SPAN + 0.5, dphi / (2.0 * PI) + 0.5, clamp(amp, 0.0, 1.0), depth);
+	return float4(syncErr / TRACK_SPAN + 0.5, dphi / (2.0 * PI) + 0.5, saturate(amp - ref), q);
 }
 
 //============================================================================
 // Flywheel : the horizontal AFC
 //============================================================================
 
-// The line oscillator does not believe any single sync pulse; it averages
-// them with a time constant of about a dozen lines. That inertia is the whole
-// character of horizontal lock: a slow timing error is followed and vanishes
-// from the screen, a step (head switch, a dropout's mistrigger) takes lines
-// to catch up with and paints the bend while it does, and per-line jitter
-// passes straight through to the picture.
+// The line oscillator, run down the field from the top: on every line it is
+// pulled toward the measured sync error with a gain weighted by how much the
+// separator trusted that line, and for whatever trust is missing it free-runs
+// - drifting by its own frequency error, which is what a free oscillator
+// does. That one recurrence is the whole character of horizontal lock: a slow
+// timing error is followed and vanishes from the screen, a step takes lines
+// to catch up with and paints the bend while it does, per-line jitter passes
+// through untouched, and as the sync sinks into noise the picture starts to
+// swim and finally tears diagonally - all from the same three terms.
 float4 PSFlywheel(VertData v) : TARGET
 {
 	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
 
 	float h = 0.0;
-	float norm = 0.0;
-	float w = 1.0;
-	for (int k = 0; k < AFC_TAPS; ++k) {
-		int r = row - k;
-		if (r >= 0) {
-			float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
-			float e = (image.Sample(pointClamp, uv).r - 0.5) * TRACK_SPAN;
-			h += e * w;
-			norm += w;
-		}
-		w *= AFC_POLE;
+	for (int r = 0; r <= row; ++r) {
+		float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
+		float4 t = image.Sample(pointClamp, uv);
+		float e = (t.r - 0.5) * TRACK_SPAN;
+		float q = t.a;
+		h += AFC_GAIN * q * (e - h) + (1.0 - q) * afc_drift;
 	}
-	h /= max(norm, 1.0e-5);
 
-	return float4(h / TRACK_SPAN + 0.5, 0.0, 0.0, 1.0);
+	return float4(clamp(h / TRACK_SPAN + 0.5, 0.0, 1.0), 0.0, 0.0, 1.0);
 }
 
 //============================================================================

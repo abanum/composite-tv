@@ -173,6 +173,8 @@ struct composite_tv {
 	double beat_phase;
 	double flag_phase1; /* the two slow oscillators of the tension wobble */
 	double flag_phase2;
+	double afc_phase1; /* wander of the line oscillator's free-run error */
+	double afc_phase2;
 	float burst_rx;           /* 1 -> 0 reception burst */
 	float burst_pb;           /* 1 -> 0 playback burst */
 	long long glitch_pulse;   /* bumped by the dock to fire a reception burst */
@@ -869,6 +871,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * decision a real oscillator makes - and for the same reason. */
 	set_f(e, "cyc_phase", (float)f->chroma_phase_acc);
 	set_f(e, "killer_auto", f->color_killer_mode == 0 ? 1.0f : 0.0f);
+	/* Free-run frequency error of the line oscillator, in samples per line:
+	 * only matters when the separator stops trusting the sync. */
+	set_f(e, "afc_drift",
+	      0.35f * (0.6f * (float)sin(f->afc_phase1) + 0.4f * (float)sin(f->afc_phase2)));
 	set_f(e, "contrast", f->contrast);
 	set_f(e, "brightness", f->brightness);
 	set_f(e, "yc_mode", (float)f->yc_mode);
@@ -1168,6 +1174,10 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	/* Tension wobble: slow and incommensurate (0.37 Hz and 0.11 Hz). */
 	f->flag_phase1 = fmod(f->flag_phase1 + 2.0 * NS_PI * 0.37 * dt, 2.0 * NS_PI);
 	f->flag_phase2 = fmod(f->flag_phase2 + 2.0 * NS_PI * 0.11 * dt, 2.0 * NS_PI);
+	/* The line oscillator's free-run error wanders even more slowly - a
+	 * warm resistor here, a cold capacitor there. */
+	f->afc_phase1 = fmod(f->afc_phase1 + 2.0 * NS_PI * 0.043 * dt, 2.0 * NS_PI);
+	f->afc_phase2 = fmod(f->afc_phase2 + 2.0 * NS_PI * 0.013 * dt, 2.0 * NS_PI);
 
 	/* degauss: decaying AC through the coil */
 	if (f->degauss > 0.0f) {
