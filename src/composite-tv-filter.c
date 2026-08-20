@@ -25,7 +25,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <graphics/graphics.h>
 #include <util/platform.h>
+#include <util/threading.h>
 #include <math.h>
+#include <string.h>
 
 #include <plugin-support.h>
 
@@ -60,6 +62,16 @@ with this program. If not, see <https://www.gnu.org/licenses/>
  * dominate and the 300us ones are rare. */
 #define DROPOUT_MIN_US 0.5
 #define DROPOUT_MAX_US 200.0
+
+/* FM sound carrier, as broadcast: 4.5 MHz above the vision carrier, +/-25 kHz
+ * deviation, 75 us pre-emphasis. FM has memory - the phase is the integral of
+ * the audio - so the carrier is synthesized on the CPU and handed to the
+ * encoder as a texture. */
+#define AUDIO_CARRIER_HZ 4.5e6
+#define AUDIO_DEVIATION_HZ 25000.0
+#define AUDIO_PREEMPH_TAU_S 75.0e-6
+#define AUD_RING_LEN 65536 /* power of two */
+#define AUD_PULL_MAX 2048  /* per-field cap; 48 kHz needs ~801 */
 
 /* Power on/off envelope (seconds), ported from the reference PowerEnvelope. */
 #define WARMUP_SEC 1.5f
@@ -171,6 +183,21 @@ struct composite_tv {
 	long long degauss_pulse;
 	obs_hotkey_id degauss_hotkey;
 	obs_hotkey_id power_hotkey;
+
+	/* FM sound carrier. The ring is fed from the audio thread and drained on
+	 * the graphics thread, one field's worth at a time. */
+	obs_weak_source_t *aud_weak;
+	char *aud_name;
+	pthread_mutex_t aud_mutex;
+	float aud_ring[AUD_RING_LEN];
+	uint64_t aud_write; /* absolute sample counters; masked on access */
+	uint64_t aud_read;
+	double fm_phase;  /* carrier phase, continuous across fields */
+	double aud_need;  /* fractional samples owed to the next field */
+	float pre_x1;     /* pre-emphasis differentiator state */
+	float audio_gain; /* carrier amplitude in video units, 0 = off */
+	gs_texture_t *audio_tex;
+	float *audio_buf;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -341,6 +368,59 @@ static struct power_gfx power_uniforms(const struct composite_tv *f)
 	return g;
 }
 
+/* ---- FM sound carrier: audio tap ------------------------------------- */
+
+/* Runs on the audio thread: downmix to mono and push into the ring. Nothing
+ * else happens here - the graphics thread drains and synthesizes. */
+static void ntsc_audio_cb(void *param, obs_source_t *source, const struct audio_data *audio, bool muted)
+{
+	struct composite_tv *f = param;
+	UNUSED_PARAMETER(source);
+	if (!audio || !audio->frames)
+		return;
+	const float *l = (const float *)audio->data[0];
+	const float *r = (const float *)audio->data[1];
+
+	pthread_mutex_lock(&f->aud_mutex);
+	for (uint32_t i = 0; i < audio->frames; i++) {
+		float smp = 0.0f;
+		if (!muted && l)
+			smp = r ? 0.5f * (l[i] + r[i]) : l[i];
+		f->aud_ring[f->aud_write & (AUD_RING_LEN - 1)] = smp;
+		f->aud_write++;
+	}
+	/* Bound the backlog so the carrier never runs seconds behind. */
+	if (f->aud_write - f->aud_read > AUD_RING_LEN / 2)
+		f->aud_read = f->aud_write - AUD_RING_LEN / 2;
+	pthread_mutex_unlock(&f->aud_mutex);
+}
+
+static void ntsc_detach_audio(struct composite_tv *f)
+{
+	if (f->aud_weak) {
+		obs_source_t *src = obs_weak_source_get_source(f->aud_weak);
+		if (src) {
+			obs_source_remove_audio_capture_callback(src, ntsc_audio_cb, f);
+			obs_source_release(src);
+		}
+		obs_weak_source_release(f->aud_weak);
+		f->aud_weak = NULL;
+	}
+}
+
+static void ntsc_attach_audio(struct composite_tv *f, const char *name)
+{
+	ntsc_detach_audio(f);
+	if (!name || !*name)
+		return;
+	obs_source_t *src = obs_get_source_by_name(name);
+	if (!src)
+		return;
+	obs_source_add_audio_capture_callback(src, ntsc_audio_cb, f);
+	f->aud_weak = obs_source_get_weak_source(src);
+	obs_source_release(src);
+}
+
 /* ---- OBS source callbacks -------------------------------------------- */
 
 static const char *ntsc_get_name(void *unused)
@@ -427,6 +507,19 @@ static void ntsc_update(void *data, obs_data_t *s)
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
 	f->degauss_strength = (float)obs_data_get_double(s, "degauss_strength");
+	/* FM sound carrier: (re)tap the chosen source. The weak reference makes
+	 * deletion safe; a source recreated under the same name is picked up on
+	 * the next settings change, because the expiry check runs here too. */
+	f->audio_gain = (float)obs_data_get_double(s, "audio_carrier_gain");
+	const char *an = obs_data_get_string(s, "carrier_audio_source");
+	bool aud_renamed = !f->aud_name || strcmp(f->aud_name, an) != 0;
+	if (aud_renamed) {
+		bfree(f->aud_name);
+		f->aud_name = bstrdup(an);
+	}
+	if (aud_renamed || (f->aud_name[0] && (!f->aud_weak || obs_weak_source_expired(f->aud_weak))))
+		ntsc_attach_audio(f, f->aud_name);
+
 	f->scope_on = obs_data_get_bool(s, "scope_on");
 	f->scope_line = (float)obs_data_get_double(s, "scope_line");
 	f->preview_zoom = (float)obs_data_get_double(s, "preview_zoom");
@@ -566,6 +659,7 @@ static void *ntsc_create(obs_data_t *settings, obs_source_t *source)
 	f->playback_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->degauss_hotkey = OBS_INVALID_HOTKEY_ID;
 	f->power_hotkey = OBS_INVALID_HOTKEY_ID;
+	pthread_mutex_init(&f->aud_mutex, NULL);
 
 	char *path = obs_module_file("effects/composite-tv.effect");
 	obs_enter_graphics();
@@ -602,6 +696,9 @@ static void ntsc_destroy(void *data)
 {
 	struct composite_tv *f = data;
 	ntsc_unregister_hotkeys(f);
+	/* Detach before tearing anything down: after this the audio thread can
+	 * no longer walk into the ring or the mutex. */
+	ntsc_detach_audio(f);
 	obs_enter_graphics();
 	if (f->effect)
 		gs_effect_destroy(f->effect);
@@ -612,7 +709,12 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->field[1]);
 	free_texrender(&f->display[0]);
 	free_texrender(&f->display[1]);
+	if (f->audio_tex)
+		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
+	pthread_mutex_destroy(&f->aud_mutex);
+	bfree(f->audio_buf);
+	bfree(f->aud_name);
 	bfree(f);
 }
 
@@ -692,6 +794,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_i", f->cutoff_i);
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
+	set_f(e, "audio_gain", f->audio_gain);
 	set_f(e, "peaking", f->peaking);
 	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
 	/* The setting is a scan line of the 486-line frame, which is what the
@@ -833,6 +936,81 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "flash", g.flash);
 }
 
+/* Synthesize one field of the FM sound carrier into audio_tex. FM has memory,
+ * so this is the one thing the shaders cannot do: the phase is the running
+ * integral of the audio. One sincos per audio sample sets a rotor, and the
+ * ~300 video samples that audio sample spans are pure rotations - the same
+ * trick the FIR weights use. Runs on the graphics thread. */
+static void ntsc_synth_carrier(struct composite_tv *f)
+{
+	if (!f->audio_tex) {
+		f->audio_tex = gs_texture_create(SIG_W, SIG_H, GS_R32F, 1, NULL, GS_DYNAMIC);
+		f->audio_buf = bzalloc(sizeof(float) * SIG_W * SIG_H);
+		if (!f->audio_tex)
+			return;
+	}
+
+	struct obs_audio_info oai;
+	double rate = 48000.0;
+	if (obs_get_audio_info(&oai) && oai.samples_per_sec > 0)
+		rate = (double)oai.samples_per_sec;
+
+	/* One field's worth of audio, with the fractional remainder carried
+	 * over so 48000 / 59.94 = 800.8 does not drift. */
+	double need_f = rate / 59.94 + f->aud_need;
+	uint32_t need = (uint32_t)need_f;
+	f->aud_need = need_f - (double)need;
+	if (need > AUD_PULL_MAX)
+		need = AUD_PULL_MAX;
+	if (need == 0)
+		need = 1;
+
+	float pull[AUD_PULL_MAX];
+	pthread_mutex_lock(&f->aud_mutex);
+	uint64_t avail64 = f->aud_write - f->aud_read;
+	uint32_t take = (avail64 < (uint64_t)need) ? (uint32_t)avail64 : need;
+	for (uint32_t i = 0; i < take; i++)
+		pull[i] = f->aud_ring[(f->aud_read + i) & (AUD_RING_LEN - 1)];
+	f->aud_read += take;
+	pthread_mutex_unlock(&f->aud_mutex);
+	/* Underrun (or no source at all): the transmitter idles at rest
+	 * frequency, it does not stop transmitting. */
+	for (uint32_t i = take; i < need; i++)
+		pull[i] = 0.0f;
+
+	/* 75 us pre-emphasis: the standard high-frequency lift, y = x + tau*x'. */
+	const float pre = (float)(AUDIO_PREEMPH_TAU_S * rate);
+	for (uint32_t i = 0; i < need; i++) {
+		float x = pull[i];
+		float y = x + pre * (x - f->pre_x1);
+		f->pre_x1 = x;
+		pull[i] = y < -2.0f ? -2.0f : (y > 2.0f ? 2.0f : y);
+	}
+
+	const uint32_t total = SIG_W * SIG_H;
+	float *dst = f->audio_buf;
+	uint32_t idx = 0;
+	for (uint32_t j = 0; j < need; j++) {
+		double freq = AUDIO_CARRIER_HZ + AUDIO_DEVIATION_HZ * (double)pull[j];
+		double dphi = 2.0 * NS_PI * freq / SAMPLE_RATE_HZ;
+		uint32_t end = (uint32_t)((uint64_t)total * (uint64_t)(j + 1) / (uint64_t)need);
+		float c = (float)cos(f->fm_phase);
+		float s = (float)sin(f->fm_phase);
+		float rc = (float)cos(dphi);
+		float rs = (float)sin(dphi);
+		uint32_t count = end - idx;
+		for (; idx < end; idx++) {
+			dst[idx] = s;
+			float t = c * rc - s * rs;
+			s = s * rc + c * rs;
+			c = t;
+		}
+		f->fm_phase = fmod(f->fm_phase + dphi * (double)count, 2.0 * NS_PI);
+	}
+
+	gs_texture_set_image(f->audio_tex, (const uint8_t *)dst, SIG_W * sizeof(float), false);
+}
+
 static void ntsc_render(void *data, gs_effect_t *unused)
 {
 	UNUSED_PARAMETER(unused);
@@ -946,6 +1124,13 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	/* 2) Encode -> 3) Detect -> 4) Decode. run_pass() applies the parameters
 	 * itself, which is what keeps the libobs clear-on-technique-end quirk
 	 * from being a rule anyone has to remember. */
+	/* FM sound carrier, when switched on. Bound whether or not it is: the
+	 * sampler is in the compiled shader either way, and an unset texture
+	 * makes D3D11 silently skip the draw. */
+	if (f->audio_gain > 0.0f)
+		ntsc_synth_carrier(f);
+	set_tex(e, "audio_tex", f->audio_tex ? f->audio_tex : input_tex);
+
 	gs_texture_t *comp = run_pass(f, e, f->composite, SIG_W, SIG_H, "Encode", input_tex, cx, cy);
 	gs_texture_t *det = run_pass(f, e, f->detector, SIG_W, SIG_H, "Detect", comp, cx, cy);
 	gs_texture_t *field_cur =

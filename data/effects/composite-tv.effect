@@ -36,6 +36,8 @@ uniform float luma_cutoff;        // Y bandwidth / fs
 uniform float cutoff_i;           // I bandwidth / fs
 uniform float cutoff_q;           // Q bandwidth / fs
 uniform float enc_chroma_gain;    // modulation chroma gain
+uniform texture2d audio_tex;      // FM sound carrier, one texel per signal sample
+uniform float audio_gain;         // carrier amplitude in video units (0 = off)
 uniform float peaking;            // video amplifier peaking (trailing edge ringing)
 uniform float burst_phase;        // colour-burst reference phase [rad]
 uniform float field_base_phase;   // per-field base subcarrier phase [rad]
@@ -478,6 +480,14 @@ float4 PSEncode(VertData v) : TARGET
 		float totalN = (float)srow * (float)SIG_W + (float)n;
 		composite += beat_gain * sin(2.0 * PI * beat_norm * totalN + beat_phase);
 	}
+
+	// FM sound carrier at 4.5 MHz, synthesized on the CPU (FM has memory -
+	// its phase is the integral of the audio) and added like the real
+	// intercarrier: over the whole line, blanking included. Everything a
+	// receiver makes of it - the fine ripple, the 4.5 MHz dots of a missing
+	// trap, the buzz against the picture - falls out downstream.
+	if (audio_gain > 0.0)
+		composite += audio_gain * audio_tex.Sample(pointClamp, v.uv).r;
 
 	float stored = composite * STORE_SCALE + STORE_BIAS;
 	// The detector's complex IF noise rides along in the spare channels,
