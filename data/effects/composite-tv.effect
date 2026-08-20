@@ -421,9 +421,11 @@ float4 PSEncode(VertData v) : TARGET
 	// deck's ideal line (sync and picture both follow it); phN is the sample
 	// index the subcarrier phase follows. They differ exactly by the tape
 	// shift, because colour-under playback corrects the chroma phase but
-	// cannot correct the timing.
+	// cannot correct the timing. The tape shift is ADDED: real flagging can
+	// bend either way, and this sign keeps the leftward bend the plugin has
+	// always drawn.
 	float offJ = rxJitterOf(srow);
-	float tpos = (float)n - offJ - tapeShiftOf(srow);
+	float tpos = (float)n - offJ + tapeShiftOf(srow);
 	float phN  = (float)n - offJ;
 
 	// The line skeleton exists everywhere; picture only inside the active
