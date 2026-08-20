@@ -854,44 +854,55 @@ float4 PSTrack(VertData v) : TARGET
 // to catch up with and paints the bend while it does, per-line jitter passes
 // through untouched, and as the sync sinks into noise the picture starts to
 // swim and finally tears diagonally - all from the same three terms.
-// afc_slop is the H-HOLD knob drifting off its sweet spot: the free-run error
-// grows, it leaks into the picture even while locked (the picture sits off
-// centre, as a misadjusted set does), and the loop gains an integral term
-// with too little damping - so instead of settling it RINGS down the field,
-// and the picture tears into the serpentine waves of a set about to lose
-// horizontal hold. At zero the second-order terms vanish and this is the
-// healthy flywheel again.
+// afc_slop is the H-HOLD knob off its sweet spot. The healthy tracker below
+// is untouched by it; what the knob raises is the loop's own instability. An
+// AFC pushed past its stability margin does not decay to rest - it settles
+// into a LIMIT CYCLE, a sustained self-oscillation whose amplitude the
+// nonlinearity caps (van der Pol dynamics, the classic model for exactly
+// this). That is the serpentine of a set about to lose horizontal hold: it
+// never stops, it does not care how clean the signal is, and because the
+// oscillator state carries across fields the waves crawl instead of
+// re-rolling. At zero slop the cycle's target amplitude is zero and the
+// residual damping kills any leftover motion.
 float4 PSFlywheel(VertData v) : TARGET
 {
 	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
 
-	// A knob off its sweet spot has a fixed-sign frequency error (the 3.5),
-	// with the thermal wander on top; the loop is left badly underdamped.
-	float fr0 = afc_drift * (1.0 + 3.0 * afc_slop) + 3.5 * afc_slop;
-	float kp = AFC_GAIN * (1.0 - 0.8 * afc_slop);
-	float ki = 0.008 * afc_slop;
-
-	// The oscillator never stops between fields: pick up where the last one
-	// ended. That continuity is what turns the serpentine from a per-field
-	// re-roll into a pattern that crawls smoothly - a set about to lose
-	// hold looks like slow waves, not like shredding.
+	// Continue last field's state: tracker phase (R), and the limit
+	// cycle's position (G) and velocity (B).
 	float2 last = float2(((float)(SIG_H - 1) + 0.5) / (float)SIG_H, 0.5);
 	float4 pv = flywheel_prev.Sample(pointClamp, last);
-	float h = (pv.r - 0.5) * TRACK_SPAN;
-	float fr = (pv.g - 0.5) * 32.0;
-	if (pv.a < 0.5)
-		fr = fr0; /* first field ever: no history to continue */
+	float h  = (pv.r - 0.5) * TRACK_SPAN;
+	float ho = clamp((pv.g - 0.5) * TRACK_SPAN, -80.0, 80.0);
+	float vo = clamp((pv.b - 0.5) * 32.0, -16.0, 16.0);
+
+	// A dead-still cycle needs a nudge to find out whether it should grow.
+	if (afc_slop > 0.0 && abs(ho) + abs(vo) * 10.0 < 0.5)
+		vo = 0.1;
+
+	float L = 60.0 * afc_slop * afc_slop + 1.0e-3;
+	float mu = 0.2 * afc_slop;
+
 	for (int r = 0; r <= row; ++r) {
 		float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
 		float4 t = image.Sample(pointClamp, uv);
 		float e = (t.r - 0.5) * TRACK_SPAN;
 		float q = t.a;
-		float err = e - h;
-		h += ((1.0 - q) + q * afc_slop) * fr + kp * q * err;
-		fr += ki * q * err + (1.0 - q) * 0.02 * (fr0 - fr);
+
+		// The healthy flywheel: trust-weighted tracking, free-run drift
+		// for whatever trust is missing.
+		h += AFC_GAIN * q * (e - h) + (1.0 - q) * afc_drift;
+
+		// The limit cycle: negative damping inside the target amplitude,
+		// positive outside, so it neither dies nor blows up.
+		float a2 = (ho * ho + (vo / 0.1) * (vo / 0.1)) / (L * L);
+		vo += 0.1 * (mu * (1.0 - a2) - 0.15 * (1.0 - afc_slop)) * vo - 0.01 * ho;
+		vo = clamp(vo, -16.0, 16.0);
+		ho = clamp(ho + vo, -80.0, 80.0);
 	}
 
-	return float4(clamp(h / TRACK_SPAN + 0.5, 0.0, 1.0), clamp(fr / 32.0 + 0.5, 0.0, 1.0), 0.0, 1.0);
+	return float4(clamp(h / TRACK_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
+		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 1.0);
 }
 
 //============================================================================
@@ -1117,7 +1128,9 @@ float lineShift(int li)
 {
 	float row = floor((float)li * field_row_step) + (float)VBI_ROWS;
 	float2 uv = float2((row + 0.5) / (float)SIG_H, 0.5);
-	return (flywheel_tex.Sample(pointClamp, uv).r - 0.5) * TRACK_SPAN / field_size.x;
+	float4 fw = flywheel_tex.Sample(pointClamp, uv);
+	/* tracker estimate plus the H-HOLD limit cycle */
+	return ((fw.r - 0.5) + (fw.g - 0.5)) * TRACK_SPAN / field_size.x;
 }
 
 // Sample a scan ln, choosing the current or previous field for the weave.
