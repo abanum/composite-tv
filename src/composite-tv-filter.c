@@ -1331,8 +1331,6 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * frame can never point the seed at a buffer that was left stale. */
 	if (fly)
 		f->fly_idx ^= 1;
-	set_tex(e, "track_tex", trk ? trk : input_tex);
-	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
 	/* The vertical oscillator: a single texel of state, judged from the
 	 * integrator charge the Track pass measured on the VBI rows. Same
@@ -1344,6 +1342,11 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	gs_texture_t *vfl = trk ? run_pass(f, e, f->vfly[f->vfly_idx], 1, 1, "VFlywheel", trk, cx, cy) : NULL;
 	if (vfl)
 		f->vfly_idx ^= 1;
+
+	/* Every technique end wipes the effect parameters, so the tracking
+	 * results may only be bound once ALL tracking passes have run. */
+	set_tex(e, "track_tex", trk ? trk : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
