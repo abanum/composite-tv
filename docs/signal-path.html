@@ -286,7 +286,7 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
   <g font-size="11" fill="var(--cyan)">
     <text x="120" y="211">タップ0: エンコード出力（破線）</text>
     <text x="452" y="205">タップ1: 受信後（全劣化込み）</text>
-    <text x="535" y="266" text-anchor="middle" font-size="10.5">毎フレーム公開</text>
+    <text x="535" y="258" text-anchor="middle" font-size="10.5">毎フレーム公開</text>
   </g>
   <g font-size="11" fill="currentColor" opacity=".65" text-anchor="middle">
     <text x="343" y="148">コンポジット</text>
@@ -358,7 +358,7 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
 </div></div>
 
 <div class="stage">
-  <div class="stage-head"><span class="pass">TRACK / FLYWHEEL / VFLYWHEEL / AGC</span><span class="gear">受像機の同期・利得系 — 同期分離器・AFC・バーストゲート・AGC</span><span class="role">受信信号を実測する。ここから下流は送出側を一切参照しない</span></div>
+  <div class="stage-head"><span class="pass">TRACK ＋3パス</span><span class="gear">受像機の同期・利得系 — 同期分離器・AFC・バーストゲート・AGC</span><span class="role">受信信号を実測する。ここから下流は送出側を一切参照しない</span></div>
   <ul class="inj">
     <li><i class="dot ok"></i><span><b>同期分離器（整合フィルタ）</b> — 67サンプル窓を±30の範囲で滑らせ、和が最小の位置＝同期パルスとする。実機の積分型分離器と同じで、雑音に対し約8倍の余裕を稼ぐ。<span class="why">雑音が勝つと最小値がゲート内のランダムな位置に落ち、そこから水平の泳ぎ・引き裂きが創発する</span> <span class="p">PSTrack → trk.r, trk.a</span></span></li>
     <li><i class="dot ok"></i><span><b>バーストゲート相関＋CFAR</b> — 分離器が決めた位置を基準に9サイクルを相関検出。同期底部を雑音基準として引き、砂嵐で振幅が過大評価されるのを防ぐ <span class="p">trk.g（位相）, trk.b（振幅−雑音）</span></span></li>
@@ -375,7 +375,7 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
 </div></div>
 
 <div class="stage">
-  <div class="stage-head"><span class="pass">DECODE</span><span class="gear">受像機 — Y/C分離・同期検波</span><span class="role">信号から絵へ戻す。754×243の有効映像だけを読む</span></div>
+  <div class="stage-head"><span class="pass">DECODE</span><span class="gear">受像機 — Y/C分離・同期検波</span><span class="role">信号から絵へ戻す。754×243の有効映像を読む（窓の外へはみ出すタップはバーストやポーチを読む＝実機のフィルタと同じ）</span></div>
   <ul class="inj">
     <li><i class="dot ok"></i><span><b>Y/C分離</b> — バンドパス(安物)/2ラインコム/3ラインコム。ドットクロール・クロスカラーは方式差から<b>自然発生</b>（描いていない）</span></li>
     <li><i class="dot ok"></i><span><b>バーストゲートAFPC</b> — Trackパスがライン毎に受信信号のバーストを相関検出し、その実測位相を復調基準にする。バーストが検出できないと発振器は自走してドリフト <span class="p">PSTrack → trk.g</span></span></li>
