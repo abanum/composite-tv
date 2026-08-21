@@ -230,7 +230,7 @@ struct composite_tv {
 	int fly_idx;
 	gs_texrender_t *vfly[2]; /* ping-pong: the field oscillator, one texel of state */
 	int vfly_idx;
-	gs_texrender_t *agc[2];  /* ping-pong: the keyed AGC, per-row gain */
+	gs_texrender_t *agc[2]; /* ping-pong: the keyed AGC, per-row gain */
 	int agc_idx;
 
 	/* debug waveform overlay */
