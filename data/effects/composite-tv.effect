@@ -210,6 +210,7 @@ uniform float flash;              // discharge flash amount
 #define TRACK_SPAN 160.0          /* offset storage scale, samples */
 #define PHASE_SPAN 1024.0         /* oscillator phase storage scale: must hold a half line */
 #define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
+#define HOLD_RESIDUAL 1.2         /* natural free-run error, samples/line, felt only off lock */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -910,6 +911,14 @@ float4 PSFlywheel(VertData v) : TARGET
 		float err = h - e;
 		if (abs(err) < (float)SYNC_SEARCH)
 			h -= AFC_GAIN * q * err;
+		else
+			// Even a healthy oscillator never free-runs at exactly
+			// line rate - off lock, the residual error the AFC
+			// normally nulls sweeps the phase on until sync re-enters
+			// the gate and the loop snaps back in. Without this a
+			// knob yanked back to zero would freeze the raster
+			// wherever the phase happened to be.
+			h += HOLD_RESIDUAL;
 		// Phase is modulo the line. Each pass through coincidence lets
 		// the AFC grab and lose it again - the sticky crawl of a real
 		// unlocked raster.
