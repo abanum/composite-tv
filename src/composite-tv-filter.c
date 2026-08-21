@@ -946,9 +946,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	const float ha = fabsf(hh);
 	set_f(e, "afc_freerun", 16.0f * hh * ha);
 	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, ha) * (1.0f - smoothstepf(0.36f, 0.55f, ha)));
-	/* V-HOLD: the same story vertically. The trigger corrects 0.4 * 8 =
-	 * 3.2 rows per field, so hold is lost near knob 0.37; past it the
-	 * frame rolls, faster the further the detune. */
+	/* V-HOLD: detune of a triggered oscillator built to free-run 6 rows a
+	 * field slow. Toward fast it crosses zero near knob +0.5 and the frame
+	 * rolls, smoothly faster beyond; toward slow it misses the 16-row
+	 * trigger window near -0.65 and rolls the other way in jerks. */
 	const float vh = f->v_hold + (f->glitch_v_hold - f->v_hold) * erx;
 	set_f(e, "vafc_freerun", 24.0f * vh * fabsf(vh));
 	set_f(e, "snow_level", f->agc_level);

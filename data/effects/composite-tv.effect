@@ -215,11 +215,14 @@ uniform float flash;              // discharge flash amount
 #define HOLD_RESIDUAL 1.2         /* natural free-run error, samples/line, felt only off lock */
 
 /* Vertical hold (VFlywheel pass): the field oscillator, one state for the
- * whole field, phase in field rows, stored as value / VPHASE_SPAN + 0.5. */
+ * whole field, phase in field rows, stored as value / VPHASE_SPAN + 0.5.
+ * It is a TRIGGERED oscillator, as in the sets that had a V-HOLD knob: the
+ * sync pulse can only fire it early, never hold it back, so it is built to
+ * free-run a little slow (V_FREERUN) and catches a pulse that arrives in
+ * the last V_GATE rows of its ramp. */
 #define VPHASE_SPAN 512.0         /* vertical phase storage scale: holds a half field */
-#define VAFC_GAIN 0.4             /* vertical pull per field once the integrator fires */
-#define V_GATE 8.0                /* rows around coincidence the trigger accepts */
-#define V_RESIDUAL 2.0            /* natural field-rate error, rows/field, felt off lock */
+#define V_GATE 16.0               /* the ramp's final stretch in which a pulse fires it */
+#define V_FREERUN -6.0            /* designed-in free run, rows/field: slow, on purpose */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -955,16 +958,19 @@ float4 PSFlywheel(VertData v) : TARGET
 		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 0.618);
 }
 
-// The vertical oscillator: one state for the whole field, same story as the
-// line oscillator one floor up. The integrator charge measured by the Track
-// pass says whether the serration block is really there; the V-HOLD knob
-// detunes the free run. Small detune parks the picture high or low (steady
-// error = detune / gain), past the trigger's capture the frame rolls -
-// faster the further the knob - and a stranded phase sweeps back to
-// coincidence on the residual error, pausing to grab at every pass. When
-// snow drowns the serrations the trust collapses and the picture starts to
-// breathe and roll on its own, which is exactly what a set in a fringe area
-// does first.
+// The vertical oscillator: one state for the whole field. The integrator
+// charge measured by the Track pass says whether the serration block is
+// really there; the V-HOLD knob detunes the free run on top of the
+// designed-in slowness. The trigger is one-sided - a pulse can fire the
+// ramp early but cannot delay it - and that asymmetry is the whole V-HOLD
+// experience: turn it toward fast and the oscillator fires before the
+// pulse arrives, misses it every field and the frame rolls, smoothly
+// faster the further you turn; turn it toward slow and it stays locked a
+// long way, then the pulse starts arriving before the ramp is ready and
+// the frame rolls the other way in jerks as the trigger catches and loses
+// it. A stranded phase (after a glitch) free-runs back to coincidence in a
+// fraction of a second and snaps in. In snow the trust collapses and the
+// oscillator just free-runs: the slow roll of a set in a fringe area.
 float4 PSVFlywheel(VertData v) : TARGET
 {
 	float4 pv = vfly_prev.Sample(pointClamp, float2(0.5, 0.5));
@@ -985,14 +991,16 @@ float4 PSVFlywheel(VertData v) : TARGET
 	}
 	float qv = saturate((cs - ce - 0.25) * 3.0);
 
-	// With the serrations drowned the trigger has nothing and the field
-	// oscillator wanders on its own error until it walks out of the gate -
-	// then the residual sweeps it round: the roll of a set deep in snow.
-	vp += vafc_freerun + (1.0 - qv) * afc_drift * 1.5;
-	if (abs(vp) < V_GATE)
-		vp -= VAFC_GAIN * qv * vp;
-	else
-		vp += V_RESIDUAL;
+	// Free run: the designed-in slowness, the knob's detune, and a wander
+	// that only matters once the serrations are drowned.
+	vp += V_FREERUN + vafc_freerun + (1.0 - qv) * afc_drift * 1.5;
+	// The trigger. Negative vp = the ramp is still running when the pulse
+	// arrives; if it is within its final stretch the pulse fires it and
+	// the phase resets to coincidence, as surely as the pulse is there.
+	// Positive vp = the oscillator already fired on its own - the pulse
+	// finds nothing to trigger and is missed.
+	if (vp <= 0.0 && vp >= -V_GATE)
+		vp -= qv * vp;
 	vp -= (float)SIG_H * floor(vp / (float)SIG_H + 0.5);
 
 	return float4(clamp(vp / VPHASE_SPAN + 0.5, 0.0, 1.0), 0.5, qv, 0.618);
