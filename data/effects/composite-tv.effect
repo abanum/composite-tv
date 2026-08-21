@@ -29,6 +29,9 @@ uniform float killer_auto;        // 1: colour killer decides from the measured 
 uniform float afc_drift;          // free-run frequency error of the line oscillator [smp/line]
 uniform float afc_slop;           // marginal-stability drive for the AFC's limit cycle
 uniform float afc_freerun;        // H-HOLD detune of the line oscillator [smp/line]
+uniform texture2d vfly_tex;       // Display: the field oscillator's phase (VFlywheel pass)
+uniform texture2d vfly_prev;      // VFlywheel: last field's state, for continuity
+uniform float vafc_freerun;       // V-HOLD detune of the field oscillator [rows/field]
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -126,7 +129,6 @@ uniform float ghost_delay;        // ghost delay in samples (negative = leading)
 uniform float beat_gain;          // interfering carrier amplitude
 uniform float beat_norm;          // interfering carrier frequency / fs
 uniform float beat_phase;         // interfering carrier phase [rad]
-uniform float v_roll;             // vertical roll offset [lines]
 uniform float vblank_lines;       // vertical blanking depth [lines]
 uniform float h_jitter;           // per-line horizontal jitter
 uniform float flagging;           // top-of-picture horizontal bend
@@ -211,6 +213,13 @@ uniform float flash;              // discharge flash amount
 #define PHASE_SPAN 1024.0         /* oscillator phase storage scale: must hold a half line */
 #define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
 #define HOLD_RESIDUAL 1.2         /* natural free-run error, samples/line, felt only off lock */
+
+/* Vertical hold (VFlywheel pass): the field oscillator, one state for the
+ * whole field, phase in field rows, stored as value / VPHASE_SPAN + 0.5. */
+#define VPHASE_SPAN 512.0         /* vertical phase storage scale: holds a half field */
+#define VAFC_GAIN 0.4             /* vertical pull per field once the integrator fires */
+#define V_GATE 8.0                /* rows around coincidence the trigger accepts */
+#define V_RESIDUAL 2.0            /* natural field-rate error, rows/field, felt off lock */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -776,9 +785,19 @@ float4 PSTrack(VertData v) : TARGET
 
 	// The nine vertical-pulse rows keep their edges at the nominal spot by
 	// construction - that is exactly what equalizing pulses are for - so the
-	// separator reports nominal instead of being confused by their widths.
-	if (row < 9)
-		return float4(0.5, 0.5, 0.0, 1.0);
+	// horizontal separator reports nominal here. What these rows DO carry
+	// is the vertical separator's raw material: an integrating separator
+	// distinguishes the field pulses by how much of the line sits at sync
+	// level - the broad serrations fill it, the narrow equalizers do not,
+	// and snow drowns the difference. Measure the charge into B; the
+	// VFlywheel pass does the judging.
+	if (row < 9) {
+		float low = 0.0;
+		for (int m = 0; m < SIG_W; ++m)
+			if (compositeAt(m, row) < -0.25)
+				low += 1.0;
+		return float4(0.5, 0.5, low / (float)SIG_W, 1.0);
+	}
 
 	// Sync separator, matched-filter style: slide a window the width of the
 	// pulse across the gate and take the offset where it sums lowest. This
@@ -934,6 +953,49 @@ float4 PSFlywheel(VertData v) : TARGET
 
 	return float4(clamp(h / PHASE_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
 		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 0.618);
+}
+
+// The vertical oscillator: one state for the whole field, same story as the
+// line oscillator one floor up. The integrator charge measured by the Track
+// pass says whether the serration block is really there; the V-HOLD knob
+// detunes the free run. Small detune parks the picture high or low (steady
+// error = detune / gain), past the trigger's capture the frame rolls -
+// faster the further the knob - and a stranded phase sweeps back to
+// coincidence on the residual error, pausing to grab at every pass. When
+// snow drowns the serrations the trust collapses and the picture starts to
+// breathe and roll on its own, which is exactly what a set in a fringe area
+// does first.
+float4 PSVFlywheel(VertData v) : TARGET
+{
+	float4 pv = vfly_prev.Sample(pointClamp, float2(0.5, 0.5));
+	float vp = 0.0;
+	if (abs(pv.a - 0.618) < 0.01)
+		vp = clamp((pv.r - 0.5) * VPHASE_SPAN, -0.5 * (float)SIG_H, 0.5 * (float)SIG_H);
+
+	// Serration rows minus equalizing rows: ~0.8 apart on a clean signal,
+	// pulled toward each other by snow until the trigger has nothing.
+	float cs = 0.0;
+	float ce = 0.0;
+	for (int r = 0; r < 9; ++r) {
+		float c = image.Sample(pointClamp, float2(((float)r + 0.5) / (float)SIG_H, 0.5)).b;
+		if (r >= 3 && r < 6)
+			cs += c / 3.0;
+		else
+			ce += c / 6.0;
+	}
+	float qv = saturate((cs - ce - 0.25) * 3.0);
+
+	// With the serrations drowned the trigger has nothing and the field
+	// oscillator wanders on its own error until it walks out of the gate -
+	// then the residual sweeps it round: the roll of a set deep in snow.
+	vp += vafc_freerun + (1.0 - qv) * afc_drift * 1.5;
+	if (abs(vp) < V_GATE)
+		vp -= VAFC_GAIN * qv * vp;
+	else
+		vp += V_RESIDUAL;
+	vp -= (float)SIG_H * floor(vp / (float)SIG_H + 0.5);
+
+	return float4(clamp(vp / VPHASE_SPAN + 0.5, 0.0, 1.0), 0.5, qv, 0.618);
 }
 
 //============================================================================
@@ -1268,7 +1330,16 @@ float4 PSDisplay(VertData v) : TARGET
 	// first pushes the topmost half line past the wrap, which used to leave a
 	// sliver of the bottom line showing above the bar.
 	float cycle = active_lines + vblank_lines;
-	float linePos = fmod(uv.y * active_lines + v_roll + cycle * 8.0, cycle);
+	// Vertical hold: the field oscillator's phase displaces the whole
+	// raster, and once V-HOLD is past capture the phase accumulates -
+	// that IS the roll, and the only one there is: a detuned oscillator,
+	// a drowned serration block, nothing else moves the frame. Phase
+	// lives in field rows; scan-out wants drawn lines.
+	float vph = 0.0;
+	float4 vf = vfly_tex.Sample(pointClamp, float2(0.5, 0.5));
+	if (abs(vf.a - 0.618) < 0.01)
+		vph = (vf.r - 0.5) * VPHASE_SPAN / field_row_step;
+	float linePos = fmod(uv.y * active_lines + vph + cycle * 8.0, cycle);
 	float inBar = (linePos >= active_lines) ? 1.0 : 0.0;
 	float lineF = linePos - 0.5;
 
@@ -1392,11 +1463,15 @@ float4 PSDisplay(VertData v) : TARGET
 			// The trace is drawn between this column's sample and the
 			// next one's, so a steep edge joins up instead of leaving
 			// the line in pieces. The x axis is the whole 910-sample
-			// line: porch, sync and burst included.
+			// line: porch, sync and burst included - compressed a few
+			// percent off the panel edges, because the line ends exactly
+			// where active video does and a trace touching the border is
+			// unreadable right where the picture's right edge lives.
 			float row = (floor(scope_line) + 0.5) / (float)SIG_H;
-			float dx = 1.0 / max(output_size.x, 1.0);
-			float s0 = (scope_src.Sample(pointClamp, float2(v.uv.x, row)).r - STORE_BIAS) / STORE_SCALE;
-			float s1 = (scope_src.Sample(pointClamp, float2(v.uv.x + dx, row)).r - STORE_BIAS) / STORE_SCALE;
+			float tx = (v.uv.x - 0.03) / 0.94;
+			float dx = 1.0 / (0.94 * max(output_size.x, 1.0));
+			float s0 = (scope_src.Sample(pointClamp, float2(tx, row)).r - STORE_BIAS) / STORE_SCALE;
+			float s1 = (scope_src.Sample(pointClamp, float2(tx + dx, row)).r - STORE_BIAS) / STORE_SCALE;
 
 			// Video runs 0 (black) to 1 (white) with sync down at -0.4;
 			// the margin leaves the graticule lines clear of the edges.
@@ -1407,7 +1482,7 @@ float4 PSDisplay(VertData v) : TARGET
 			outCol = lerp(outCol, float3(0.0, 0.02, 0.03), 0.82);
 			if (abs(val) < w || abs(val - 1.0) < w || abs(val - SYNC_LEVEL) < w)
 				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.85);
-			if (val > min(s0, s1) - w && val < max(s0, s1) + w)
+			if (tx >= 0.0 && tx <= 1.0 && val > min(s0, s1) - w && val < max(s0, s1) + w)
 				outCol = float3(0.25, 1.0, 0.35);
 
 			// Receiver-tracking traces, field rows mapped across the panel:
@@ -1415,17 +1490,19 @@ float4 PSDisplay(VertData v) : TARGET
 			// each way full scale), cyan = the separator's per-line
 			// trust. What the tube does with timing is exactly the amber
 			// line.
-			float2 fuv = float2(v.uv.x, 0.5);
+			float2 fuv = float2(tx, 0.5);
 			float4 fw2 = flywheel_tex.Sample(pointClamp, fuv);
 			float4 tk2 = track_tex.Sample(pointClamp, fuv);
 			float hshift = 0.0; /* fraction of a full line, -0.5..0.5 */
 			if (abs(fw2.a - 0.618) < 0.01)
 				hshift = ((fw2.r - 0.5) * PHASE_SPAN + (fw2.g - 0.5) * TRACK_SPAN) /
 					 (float)SIG_W;
-			if (abs(val - (0.35 + hshift)) < w * 1.2)
-				outCol = float3(1.0, 0.72, 0.2);
-			if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
-				outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
+			if (tx >= 0.0 && tx <= 1.0) {
+				if (abs(val - (0.35 + hshift)) < w * 1.2)
+					outCol = float3(1.0, 0.72, 0.2);
+				if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
+					outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
+			}
 		}
 	}
 
@@ -1547,5 +1624,14 @@ technique Flywheel
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSFlywheel(v);
+	}
+}
+
+technique VFlywheel
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSVFlywheel(v);
 	}
 }

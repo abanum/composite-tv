@@ -121,6 +121,7 @@ struct composite_tv {
 	float agc_level;
 	float agc_jitter;
 	float h_hold; /* how far the H-HOLD knob sits off its sweet spot */
+	float v_hold; /* how far the V-HOLD knob sits off its sweet spot */
 	float if_cutoff;
 	float luma_cutoff;
 	float chroma_gain;
@@ -152,7 +153,6 @@ struct composite_tv {
 	/* glitches */
 	float ghost_gain;
 	float ghost_delay;
-	float v_roll_speed;
 	float h_jitter;
 	float flagging;
 	float flag_wave; /* tension wobble: the bend waves ("flagwaving") */
@@ -164,12 +164,16 @@ struct composite_tv {
 	float damage_speed;
 	float beat_gain;
 	float beat_norm;
-	float burst_len; /* reception burst duration */
+	float burst_len;  /* reception burst duration */
+	bool glitch_on;   /* the reception group's checkbox */
+	bool playback_on; /* the playback group's checkbox */
+	float glitch_fs;  /* receiver state the group imposes while active: */
+	float glitch_h_hold;
+	float glitch_v_hold;
 	float sweep_sec; /* playback burst: seconds for the crease to cross once */
 
 	/* glitch animation state. The two halves of the fault set run their own
 	 * envelopes so a reception burst and a playback burst can overlap. */
-	double v_roll_pos;
 	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
 	double flag_phase1; /* the two slow oscillators of the tension wobble */
@@ -224,6 +228,8 @@ struct composite_tv {
 	gs_texrender_t *track;
 	gs_texrender_t *flywheel[2]; /* ping-pong: the oscillator state carries across fields */
 	int fly_idx;
+	gs_texrender_t *vfly[2]; /* ping-pong: the field oscillator, one texel of state */
+	int vfly_idx;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -470,6 +476,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
 	f->h_hold = (float)obs_data_get_double(s, "h_hold");
+	f->v_hold = (float)obs_data_get_double(s, "v_hold");
 	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
 	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
 	/* Colour killer. Scenes saved before it became a mode carry the old
@@ -513,28 +520,49 @@ static void ntsc_update(void *data, obs_data_t *s)
 	if (!obs_data_has_user_value(s, "playback_enable") && obs_data_get_bool(s, "glitch_enable"))
 		obs_data_set_bool(s, "playback_enable", true);
 
-	/* Each half is gated by its own group toggle, so apply the gates once
-	 * here and let the render path just read the values. */
-	const bool rx = obs_data_get_bool(s, "glitch_enable");
+	/* The playback half is gated here by its checkbox. The reception half
+	 * is gated in apply_params() instead, because a Reception trigger
+	 * switches that group on for a while without touching the settings:
+	 * the checkbox says what the group does, the trigger says when. */
+	f->glitch_on = obs_data_get_bool(s, "glitch_enable");
 	const bool pb = obs_data_get_bool(s, "playback_enable");
-	f->ghost_gain = rx ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
-	f->ghost_delay = rx ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
-	f->v_roll_speed = rx ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
-	f->h_jitter = rx ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
-	f->fading = rx ? (float)obs_data_get_double(s, "fading") : 0.0f;
-	f->beat_gain = rx ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
+	f->ghost_gain = (float)obs_data_get_double(s, "ghost_gain");
+	f->ghost_delay = (float)obs_data_get_double(s, "ghost_delay");
+	f->glitch_fs = (float)obs_data_get_double(s, "glitch_field_strength");
+	f->glitch_h_hold = (float)obs_data_get_double(s, "glitch_h_hold");
+	f->glitch_v_hold = (float)obs_data_get_double(s, "glitch_v_hold");
+	/* The manual vertical roll retired when V-HOLD became physical: a roll
+	 * is nothing but a detuned field oscillator. Scenes that still carry a
+	 * roll speed get it written into V-HOLD once (screens/s -> rows/field ->
+	 * knob), and the old key is dropped so it cannot come back. */
+	if (obs_data_has_user_value(s, "v_roll_speed")) {
+		const double roll = obs_data_get_double(s, "v_roll_speed");
+		if (roll != 0.0 && !obs_data_has_user_value(s, "v_hold")) {
+			const double detune = roll * SIG_H / 59.94; /* rows per field */
+			const double knob = sqrt(fabs(detune) / 24.0);
+			obs_data_set_double(s, "v_hold", roll < 0.0 ? -knob : knob);
+			f->v_hold = (float)(roll < 0.0 ? -knob : knob);
+		}
+		obs_data_erase(s, "v_roll_speed");
+	}
+	f->h_jitter = (float)obs_data_get_double(s, "h_jitter");
+	f->fading = (float)obs_data_get_double(s, "fading");
+	f->beat_gain = (float)obs_data_get_double(s, "beat_gain");
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
-	f->flagging = pb ? (float)obs_data_get_double(s, "flagging") : 0.0f;
-	f->flag_wave = pb ? (float)obs_data_get_double(s, "flag_wave") : 0.0f;
-	f->head_switch = pb ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
-	f->peaking = pb ? (float)obs_data_get_double(s, "peaking") : 0.0f;
-	f->dropout = pb ? (float)obs_data_get_double(s, "dropout") : 0.0f;
+	/* Same arrangement for the playback half: raw values here, the gate in
+	 * apply_params(), so a Playback trigger can switch the group on. */
+	f->playback_on = pb;
+	f->flagging = (float)obs_data_get_double(s, "flagging");
+	f->flag_wave = (float)obs_data_get_double(s, "flag_wave");
+	f->head_switch = (float)obs_data_get_double(s, "head_switch");
+	f->peaking = (float)obs_data_get_double(s, "peaking");
+	f->dropout = (float)obs_data_get_double(s, "dropout");
 	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
-	f->tape_damage = pb ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
+	f->tape_damage = (float)obs_data_get_double(s, "tape_damage");
 	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
-	f->damage_speed = pb ? (float)obs_data_get_double(s, "tape_damage_drift") : 0.0f;
+	f->damage_speed = (float)obs_data_get_double(s, "tape_damage_drift");
 	f->sweep_sec = (float)obs_data_get_double(s, "sweep_sec");
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
@@ -752,6 +780,8 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->track);
 	free_texrender(&f->flywheel[0]);
 	free_texrender(&f->flywheel[1]);
+	free_texrender(&f->vfly[0]);
+	free_texrender(&f->vfly[1]);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -823,10 +853,26 @@ static gs_texture_t *run_pass(struct composite_tv *f, gs_effect_t *e, gs_texrend
  * this has to run again before every pass or the D3D11 backend silently skips
  * the draw ("Not all shader parameters were set"). run_pass() is the only
  * caller precisely so that nobody has to remember this. */
+/* Exponential recovery of a triggered fault: full strength the moment it
+ * strikes, then a log-style fade to nothing by the end of the burst. t is
+ * the burst clock, 1 at the trigger and 0 when it is over. */
+static inline float burst_env(float t)
+{
+	return t > 0.0f ? (powf(20.0f, t) - 1.0f) / 19.0f : 0.0f;
+}
+
 static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, uint32_t cy)
 {
 	/* Fields alternate 0,PI,0,PI over the four-field sequence. */
 	const float field_base_phase = (f->field_counter & 1u) ? (float)NS_PI : 0.0f;
+	/* A ticked group holds its settings at full strength. A triggered one
+	 * strikes at full strength and then recovers exponentially over the
+	 * burst - most of it gone early, a long tail - the way an aerial
+	 * settles or a tape runs out of its bad stretch. burst_env() maps the
+	 * linear burst clock (1 at the trigger, 0 at the end) onto that. */
+	const float erx = f->glitch_on ? 1.0f : burst_env(f->burst_rx);
+	const float epb = f->playback_on ? 1.0f : burst_env(f->burst_pb);
+	const bool pact = epb > 0.0f;
 
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
@@ -838,7 +884,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "audio_gain", f->audio_gain);
-	set_f(e, "peaking", f->peaking);
+	set_f(e, "peaking", f->peaking * epb);
 	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
 	/* The setting is a scan line of the 486-line frame, which is what the
 	 * viewer sees; the signal itself only has 243 rows per field, so two
@@ -872,13 +918,19 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * Everything downstream reacts on its own: the snow breathes, colour
 	 * drops in and out at the killer threshold, and the horizontal lock
 	 * swims whenever a dip crosses the margin. */
-	float fs_eff = f->field_strength;
+	/* The reception group is live while its box is ticked or a trigger
+	 * has it switched on for the burst length. While live, it imposes its
+	 * own receiver state - field strength, H-HOLD, V-HOLD - and its
+	 * faults; when it drops out again the physics takes the set back to
+	 * lock on its own. */
+	const float fading = f->fading * erx;
+	float fs_eff = f->field_strength + (f->glitch_fs - f->field_strength) * erx;
 	float fade_dip = 0.0f;
-	if (f->fading > 0.0f) {
+	if (fading > 0.0f) {
 		float fw = 0.50f * (float)sin(f->fade_phase1) + 0.35f * (float)sin(f->fade_phase2) +
 			   0.15f * (0.6f * (float)sin(f->fade_phase3) + 0.4f * (float)sin(f->fade_phase4));
 		fade_dip = 0.5f + 0.5f * fw; /* 0 = crest, 1 = deepest */
-		fs_eff *= clampf(1.0f - f->fading * fade_dip, 0.0f, 1.0f);
+		fs_eff *= clampf(1.0f - fading * fade_dip, 0.0f, 1.0f);
 	}
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
@@ -887,10 +939,18 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * correct at most 0.08 * 30 = 2.4 samples per line, so hold is lost
 	 * near knob 0.39. Below that, a marginal-stability band drives the
 	 * serpentine limit cycle; above it the free-running phase winds the
-	 * raster round the line - about 4.5 diagonal copies at full detune. */
-	const float hh = f->h_hold;
-	set_f(e, "afc_freerun", 16.0f * hh * hh);
-	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, hh) * (1.0f - smoothstepf(0.36f, 0.55f, hh)));
+	 * raster round the line - about 4.5 diagonal copies at full detune.
+	 * Both knobs are bipolar, centre = lock: the sign is the direction
+	 * of the detune, which way the copies lean and the frame rolls. */
+	const float hh = f->h_hold + (f->glitch_h_hold - f->h_hold) * erx;
+	const float ha = fabsf(hh);
+	set_f(e, "afc_freerun", 16.0f * hh * ha);
+	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, ha) * (1.0f - smoothstepf(0.36f, 0.55f, ha)));
+	/* V-HOLD: the same story vertically. The trigger corrects 0.4 * 8 =
+	 * 3.2 rows per field, so hold is lost near knob 0.37; past it the
+	 * frame rolls, faster the further the detune. */
+	const float vh = f->v_hold + (f->glitch_v_hold - f->v_hold) * erx;
+	set_f(e, "vafc_freerun", 24.0f * vh * fabsf(vh));
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
@@ -967,42 +1027,37 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * the hotkeys still work from a clean picture. Each fault answers to the
 	 * burst of the half it belongs to - a reception burst leaves the tape
 	 * alone and a playback burst leaves the aerial alone. */
-	const float brx = f->burst_rx;
-	const float bpb = f->burst_pb;
 	/* Two-ray physics of interference fading: a deep dip means a second path
 	 * of nearly equal strength arriving in antiphase - and a path like that
 	 * IS a ghost. So as the fade approaches its trough, an echo stands up,
 	 * on the user's own ghost path if one is set, else on a wandering path
 	 * of its own. The wander is the reflection point moving. */
-	float gg = f->ghost_gain;
+	float gg = f->ghost_gain * erx;
 	float gd = f->ghost_delay;
-	if (f->fading > 0.0f) {
-		float two_ray = f->fading * smoothstepf(0.55f, 0.95f, fade_dip);
+	float two_ray = fading * smoothstepf(0.55f, 0.95f, fade_dip);
+	if (two_ray > 0.0f) {
 		gg += 0.35f * two_ray;
 		if (f->ghost_delay == 0.0f)
 			gd = 16.0f + 7.0f * (float)sin(f->fade_phase5);
 	}
 	set_f(e, "ghost_gain", gg);
 	set_f(e, "ghost_delay", gd);
-	set_f(e, "beat_gain", f->beat_gain);
+	set_f(e, "beat_gain", f->beat_gain * erx);
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
-	set_f(e, "v_roll", (float)f->v_roll_pos);
 	set_f(e, "vblank_lines", bar_lines(f));
-	set_f(e, "h_jitter", clampf(f->h_jitter + brx * 0.8f, 0.0f, 2.0f));
+	set_f(e, "h_jitter", f->h_jitter * erx);
 	/* Flagging can bend either way - the sign of the tension error decides -
 	 * and a wandering tension makes the bend wave. The wobble is two slow
-	 * incommensurate sines, so the flag never settles into a loop, and the
-	 * burst pushes away from zero in whichever direction is already live. */
+	 * incommensurate sines, so the flag never settles into a loop. */
 	float flag_eff =
 		f->flagging + f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
-	flag_eff += bpb * 0.6f * (flag_eff < 0.0f ? -1.0f : 1.0f);
-	set_f(e, "flagging", clampf(flag_eff, -2.0f, 2.0f));
-	set_f(e, "head_switch", clampf(f->head_switch + bpb * 0.5f, 0.0f, 2.0f));
+	set_f(e, "flagging", clampf(flag_eff * epb, -2.0f, 2.0f));
+	set_f(e, "head_switch", clampf(f->head_switch, 0.0f, 2.0f) * epb);
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
 	 * the tube happens to be drawing. */
-	const float dop = clampf(f->dropout + bpb * 0.6f, 0.0f, 1.6f);
+	const float dop = clampf(f->dropout, 0.0f, 1.6f) * epb;
 	float prob = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
@@ -1018,7 +1073,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* The crease is placed rather than rolled for: the slider is how many
 	 * line periods of signal it takes out, so 0.5 is a whole line and
 	 * anything past that wraps onto the rows below. */
-	set_f(e, "damage_len", f->tape_damage * 2.0f);
+	set_f(e, "damage_len", pact ? f->tape_damage * 2.0f : 0.0f);
 	double dpos = (double)f->tape_damage_pos + f->damage_pos;
 	set_f(e, "damage_line", floorf((float)(dpos - floor(dpos)) * (float)(FIELD_H - 1)) + (float)SIG_VBI_ROWS);
 
@@ -1179,28 +1234,6 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		if (f->burst_pb < 0.0f)
 			f->burst_pb = 0.0f;
 	}
-	/* The burst kicks the vertical hold hard so the picture visibly tumbles
-	 * (several screens over the burst) before it re-locks. */
-	/* One roll cycle is the active picture plus the blanking interval, which
-	 * is what the shader wraps over - the two have to agree or the wrap would
-	 * jump the picture. */
-	const double frame_lines = (double)f->scan_lines;
-	const double cycle = frame_lines + (double)bar_lines(f);
-	float roll_speed = f->v_roll_speed + f->burst_rx * 6.0f;
-	if (roll_speed != 0.0f) {
-		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * cycle * dt, cycle);
-	} else if (f->v_roll_pos != 0.0) {
-		/* Vertical hold re-locks: slide back to the framed position by the
-		 * shortest way round, then snap once we are within half a line. */
-		const double half = cycle * 0.5;
-		double p = fmod(f->v_roll_pos, cycle);
-		if (p > half)
-			p -= cycle;
-		else if (p < -half)
-			p += cycle;
-		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
-		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
-	}
 	/* A crease is at a fixed place on the tape, not on the screen. Whether it
 	 * lands on the same lines twice depends on the tape keeping step with the
 	 * drum, and it does not quite, so the damaged band crawls through the
@@ -1208,7 +1241,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * burst sends it across at exactly one screen per sweep, which is what
 	 * that setting means, and zeroing everything hands the band back to its
 	 * own slider. */
-	float damage_speed = f->damage_speed + (f->burst_pb > 0.0f ? 1.0f / sweep : 0.0f);
+	float damage_speed = (f->playback_on ? f->damage_speed : 0.0f) + (f->burst_pb > 0.0f ? 1.0f / sweep : 0.0f);
 	if (damage_speed != 0.0f) {
 		double p = f->damage_pos + (double)damage_speed * dt;
 		f->damage_pos = p - floor(p);
@@ -1320,6 +1353,20 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * frame can never point the seed at a buffer that was left stale. */
 	if (fly)
 		f->fly_idx ^= 1;
+
+	/* The vertical oscillator: a single texel of state, judged from the
+	 * integrator charge the Track pass measured on the VBI rows. Same
+	 * ping-pong continuity rules as the line oscillator above. */
+	ensure_tr(&f->vfly[0], GS_RGBA32F);
+	ensure_tr(&f->vfly[1], GS_RGBA32F);
+	gs_texture_t *vfl_prev = gs_texrender_get_texture(f->vfly[1 - f->vfly_idx]);
+	set_tex(e, "vfly_prev", vfl_prev ? vfl_prev : input_tex);
+	gs_texture_t *vfl = trk ? run_pass(f, e, f->vfly[f->vfly_idx], 1, 1, "VFlywheel", trk, cx, cy) : NULL;
+	if (vfl)
+		f->vfly_idx ^= 1;
+
+	/* Every technique end wipes the effect parameters, so the tracking
+	 * results may only be bound once ALL tracking passes have run. */
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
@@ -1348,6 +1395,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * a line to the right. */
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+	set_tex(e, "vfly_tex", vfl ? vfl : input_tex);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
@@ -1416,6 +1464,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_AGC_LEVEL 0.62
 #define DEF_AGC_JITTER 0.06
 #define DEF_H_HOLD 0.0
+#define DEF_V_HOLD 0.0
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
@@ -1455,15 +1504,17 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_GLITCH_ENABLE false
 #define DEF_PLAYBACK_ENABLE false
 #define DEF_SWEEP_SEC 2.0
+#define DEF_GLITCH_FS 0.20
+#define DEF_GLITCH_H_HOLD 0.0
+#define DEF_GLITCH_V_HOLD 0.0
 #define DEF_GHOST_GAIN 0.0
 #define DEF_GHOST_DELAY 24.0
-#define DEF_V_ROLL_SPEED 0.0
 #define DEF_H_JITTER 0.0
 #define DEF_FADING 0.0
-#define DEF_FLAGGING 0.0
+#define DEF_FLAGGING 0.5
 #define DEF_FLAG_WAVE 0.0
-#define DEF_HEAD_SWITCH 0.0
-#define DEF_DROPOUT 0.0
+#define DEF_HEAD_SWITCH 0.4
+#define DEF_DROPOUT 0.5
 #define DEF_DROPOUT_MODE 0
 #define DEF_TAPE_DAMAGE 0.0
 #define DEF_TAPE_DAMAGE_POS 0.5
@@ -1518,8 +1569,11 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
 			     DEF_AGC_JITTER);
 	obs_property_t *hh =
-		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), 0.0, 1.0, 0.01, DEF_H_HOLD);
+		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), -1.0, 1.0, 0.01, DEF_H_HOLD);
 	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
+	obs_property_t *vh =
+		ctv_add_float_slider(p, "v_hold", obs_module_text("CompositeTV.VHold"), -1.0, 1.0, 0.01, DEF_V_HOLD);
+	ctv_add_tip_note(vh, obs_module_text("CompositeTV.VHold.Tip"));
 	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
 			     DEF_IF_BANDWIDTH);
 
@@ -1595,11 +1649,17 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	 * they belong together: the aerial and the tape fail at their own times
 	 * and each half is fired on its own. --- */
 	obs_properties_t *g = obs_properties_create();
+	obs_property_t *gfs = ctv_add_float_slider(g, "glitch_field_strength",
+						   obs_module_text("CompositeTV.GlitchFieldStrength"), 0.0, 1.0, 0.01,
+						   DEF_GLITCH_FS);
+	ctv_add_tip_note(gfs, obs_module_text("CompositeTV.GlitchFieldStrength.Tip"));
+	ctv_add_float_slider(g, "glitch_h_hold", obs_module_text("CompositeTV.GlitchHHold"), -1.0, 1.0, 0.01,
+			     DEF_GLITCH_H_HOLD);
+	ctv_add_float_slider(g, "glitch_v_hold", obs_module_text("CompositeTV.GlitchVHold"), -1.0, 1.0, 0.01,
+			     DEF_GLITCH_V_HOLD);
 	ctv_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01, DEF_GHOST_GAIN);
 	ctv_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0,
 			     DEF_GHOST_DELAY);
-	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
-			     DEF_V_ROLL_SPEED);
 	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
 	obs_property_t *fd =
 		ctv_add_float_slider(g, "fading", obs_module_text("CompositeTV.Fading"), 0.0, 1.0, 0.01, DEF_FADING);
@@ -1683,6 +1743,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "agc_level", DEF_AGC_LEVEL);
 	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
 	obs_data_set_default_double(s, "h_hold", DEF_H_HOLD);
+	obs_data_set_default_double(s, "v_hold", DEF_V_HOLD);
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);
@@ -1722,9 +1783,11 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_bool(s, "playback_enable", DEF_PLAYBACK_ENABLE);
 	obs_data_set_default_double(s, "sweep_sec", DEF_SWEEP_SEC);
 	obs_data_set_default_double(s, "peaking", DEF_PEAKING);
+	obs_data_set_default_double(s, "glitch_field_strength", DEF_GLITCH_FS);
+	obs_data_set_default_double(s, "glitch_h_hold", DEF_GLITCH_H_HOLD);
+	obs_data_set_default_double(s, "glitch_v_hold", DEF_GLITCH_V_HOLD);
 	obs_data_set_default_double(s, "ghost_gain", DEF_GHOST_GAIN);
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
-	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
 	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
 	obs_data_set_default_double(s, "fading", DEF_FADING);
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);

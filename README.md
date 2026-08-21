@@ -159,10 +159,11 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 |---|---|---|
 | ゴースト強度 / 遅延 | 検波前 | 遅れて届いた反射波による多重像。Y/C 分離前なので色にじみを伴う。遅延を**負**にすると先行ゴースト |
 | 干渉ビート 強度 / 周波数 | エンコード | 流れる斜め縞。3.58MHz 付近では虹色のクロスカラー |
-| 垂直ロール速度 / 帰線帯 | 表示 | 画面が上下に流れ、継ぎ目に黒い帯（V-Hold 不良） |
+| V-HOLD / H-HOLD（RF/検波の節） | 受像機 | 垂直・水平発振器のデチューン。回して外れると縦ロール（継ぎ目に黒帯）／斜めの引き裂き。信号から同期を追う物理モデル |
 | 水平同期ジッタ | 信号 | ライン全体（同期パルスごと）が時間軸上で揺れる。行ごとに横へ揺れ、左端がギザギザに |
 | フェージング | 検波 | 電波の浮き沈み（Eスポ/トロポ）。砂が呼吸し、色が点滅し、水平が泳ぐ——弱電界の挙動が周期的に現れる |
-| 一時発動の長さ | — | 発動が収まるまでの秒数 |
+| 発動中の電界強度 / H-HOLD / V-HOLD | 受像機 | 受信不良グループが有効なあいだ、メインの値の代わりに使われる受像機の状態 |
+| 一時発動の長さ | — | 発動でグループが ON になっている秒数 |
 
 **グリッチ（再生不良の演出）** — デッキとテープ側の不調
 
@@ -176,14 +177,17 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 | テープ傷が1画面動く時間 | — | 一時発動でテープ傷が画面を1周する秒数。発動もこの長さだけ続く |
 
 **一時発動**: ドックの「**受信不良**」「**再生不良**」ボタン、または 設定 → ホットキー の
-対応する項目で、それぞれのグループだけが一気に暴れて自然に収まります。**グループが OFF でも
-ボタンは効きます**。再生不良の発動では、テープ傷が指定秒数で画面を 1 周します。
+対応する項目。**受信不良**は、グループのチェックを OFF にしたまま「発動中の電界強度 / H-HOLD /
+V-HOLD」などで受信不良の中身を決めておき、発動で「一時発動の長さ」だけグループを ON にする
+仕組みです——設定値いっぱいで始まり対数的に元へ戻っていき、砂嵐からの復帰や同期の再ロックは
+受像機の物理が自力で行います。**再生不良**も同じ仕組みで、グループを「テープ傷が1画面動く時間」だけ ON にし、その間に
+テープ傷が画面を 1 周します（既定値は従来の発動時の暴れ方に合わせてあります）。
 
 **おすすめの組み合わせ**
 
 - **古いアンテナ・弱電界**: ゴースト 0.25 / 遅延 30 / 水平ジッタ 0.15 / 電界強度 0.6
 - **VHS 再生**: ヘッドスイッチング 0.5 / ドロップアウト 0.3 / フラッギング 0.4
-- **チャンネル調整中**: 垂直ロール 0.3 / 帰線帯 12 / 干渉ビート 0.15
+- **チャンネル調整中**: V-HOLD 0.45 / 干渉ビート 0.15
 
 ### 消磁（デガウス）
 
@@ -365,7 +369,7 @@ power can be driven live for a whole scene.
 Switch on the **Glitches** group for reception faults injected at the physically correct
 stage: multipath **ghosting** (before Y/C separation, so it smears colour; a negative delay
 gives a leading ghost), an **interference beat** (herringbone plus rainbow cross-colour),
-**vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
+**horizontal sync jitter**, **flagging** (top-of-picture
 bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Reception** and **Playback** buttons
 and the *Composite TV: trigger glitch* hotkey fire a momentary burst that settles on its own.
 
