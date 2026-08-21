@@ -41,7 +41,7 @@ WebGL2 アプリ **[NTSC Snow Simulator](https://github.com/abanum/ZAA)**（MIT�
 [docs/parameters.md](docs/parameters.md) の「信号出力」）。
 
 > 📈 **信号経路図**（全段・全注入点・受像機の同期／利得ループを 1 枚にまとめた図）:
-> **[ブラウザで表示](https://raw.githack.com/abanum/composite-tv/master/docs/signal-path.html)**
+> **[ブラウザで表示](https://abanum.github.io/composite-tv/signal-path.html)**
 > ／ [ソース (docs/signal-path.html)](docs/signal-path.html)
 
 ## 導入方法
@@ -334,7 +334,7 @@ number and audio sample count).
 
 > 📈 **Signal path diagram** — every stage, every injection point, and the receiver's
 > sync and gain loops on one page:
-> **[view in the browser](https://raw.githack.com/abanum/composite-tv/master/docs/signal-path.html)**
+> **[view in the browser](https://abanum.github.io/composite-tv/signal-path.html)**
 > / [source (docs/signal-path.html)](docs/signal-path.html). Japanese only.
 
 ### Build
