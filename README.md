@@ -40,6 +40,10 @@ WebGL2 アプリ **[NTSC Snow Simulator](https://github.com/abanum/ZAA)**（MIT�
 **4.5MHz の FM 搬送波**として信号に乗せることもできます（詳細は
 [docs/parameters.md](docs/parameters.md) の「信号出力」）。
 
+> 📈 **信号経路図**（全段・全注入点・受像機の同期／利得ループを 1 枚にまとめた図）:
+> **[ブラウザで表示](https://raw.githack.com/abanum/composite-tv/master/docs/signal-path.html)**
+> ／ [ソース (docs/signal-path.html)](docs/signal-path.html)
+
 ## 導入方法
 
 ### ビルド（付属の CMake プリセット）
@@ -327,6 +331,11 @@ on it to hand the signal to an outside NTSC decoder pixel-for-pixel, optionally
 with a chosen audio source riding on a standards-correct **4.5 MHz FM sound carrier**
 (16-bit R+G packing, or an 8-bit grayscale debug view; header row carries magic, field
 number and audio sample count).
+
+> 📈 **Signal path diagram** — every stage, every injection point, and the receiver's
+> sync and gain loops on one page:
+> **[view in the browser](https://raw.githack.com/abanum/composite-tv/master/docs/signal-path.html)**
+> / [source (docs/signal-path.html)](docs/signal-path.html). Japanese only.
 
 ### Build
 
