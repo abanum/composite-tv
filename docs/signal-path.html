@@ -498,9 +498,9 @@ ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ
 <tr><td>ドロップアウト＋DOC</td><td>Detect</td><td>デッキ内（RF喪失＋補償回路）</td><td><span class="chip wa">△ 位置</span><span class="why">1H遅延線が前ラインのテクスチャを要するため。色落ち等の効果は正確</span></td></tr>
 <tr><td>ヘッドスイッチのノイズ帯</td><td>Detect</td><td>デッキ内（ヘッド切替のRF途切れ）</td><td><span class="chip wa">△ 位置</span><span class="why">効果は正確。タップ0に乗らない</span></td></tr>
 <tr><td>Y/C分離・ドットクロール・クロスカラー</td><td>Decode</td><td>受像機</td><td><span class="chip ok">✓ 一致</span><span class="why">方式差からの自然発生</span></td></tr>
-<tr><td>バーストロック</td><td>Track→Decode</td><td>受像機のバーストゲートAFPC</td><td><span class="chip ok">✓ 一致</span><span class="why">受信信号からライン毎に実測。B2で実装</span></td></tr>
+<tr><td>バーストロック</td><td>Track→Decode</td><td>受像機のバーストゲートAFPC</td><td><span class="chip ok">✓ 一致</span><span class="why">受信信号からライン毎に実測</span></td></tr>
 <tr><td>同期分離＋水平AFC</td><td>Track→Flywheel→Display</td><td>受像機の同期系</td><td><span class="chip ok">✓ 一致</span><span class="why">実測＋フライホイール。弱電界の乱れ・ドロップアウト後の引きずりが創発</span></td></tr>
-<tr><td>カラーキラー／位相ドリフト</td><td>Track→Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip ok">✓ 一致</span><span class="why">実測バースト振幅で自動判定・自走ドリフト（B2）。手動モードも残置</span></td></tr>
+<tr><td>カラーキラー／位相ドリフト</td><td>Track→Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip ok">✓ 一致</span><span class="why">実測バースト振幅で自動判定・自走ドリフト。手動モードも残置</span></td></tr>
 <tr><td>垂直同期（V-HOLD）</td><td>Track→VFlywheel→Display</td><td>受像機の垂直発振器</td><td><span class="chip ok">✓ 一致</span><span class="why">VBIの積分器充電でトリガする片側性の発振器。回転・非対称な外れ方・再ロックが創発。手動の垂直ロールは廃止</span></td></tr>
 <tr><td>水平同期（H-HOLD）</td><td>Flywheel→Display</td><td>受像機の水平発振器</td><td><span class="chip ok">✓ 一致</span><span class="why">寄り→蛇行（安定限界）→位相スリップ（斜めコピー）が一つの漸化式から</span></td></tr>
 <tr><td>AGC・ハンチング</td><td>Track→Agc→Decode</td><td>受像機のキー付きAGC</td><td><span class="chip ok">✓ 一致</span><span class="why">同期先端を実測する二次ループ。ドロップアウト後の白筋・信号消失時の暗転・復帰時の白飛びが創発</span></td></tr>
@@ -508,9 +508,9 @@ ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ
 </table>
 </div>
 
-<h2><span class="no">05</span>既知の近似と次の一手</h2>
-<p><b>受像機側は一通り実装済みです。</b>同期分離器・水平AFC・バーストゲートAFPC・自動カラーキラー（B2）、
-垂直同期のトリガ式発振器（B3）、キー付きAGCループが Track / Flywheel / VFlywheel / Agc の4パスとして入り、
+<h2><span class="no">05</span>既知の近似</h2>
+<p><b>受像機側は一通り実装済みです。</b>同期分離器・水平AFC・バーストゲートAFPC・自動カラーキラー、
+垂直同期のトリガ式発振器、キー付きAGCループが Track / Flywheel / VFlywheel / Agc の4パスとして入り、
 かつて「代役」だったバーストロック、「専用コード」だったドロップアウト後の乱れ、「乱数」だったAGCハンチング、
 「表示側のアニメーション」だった垂直ロールは、すべて実測からの創発に置き換わりました。</p>
 <p><b>残る近似</b>は、いずれも見た目と送出信号の正しさには影響しない範囲です。</p>
@@ -525,7 +525,5 @@ ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ
     このノブは「電波はきれいなのに送出側の時間軸が揺れている」場合用の送出側ショートカットとして残しています。</li>
   <li><b>垂直の解像度</b> — 1フィールド＝263行の近似（実際は262.5行）。半ラインぶんの位相はヘッダのフィールド番号で持っています。</li>
 </ul>
-<p><b>次の一手の候補</b>: 4.5MHz トラップ段（＋「トラップ調整不良」でヘリンボーンを出す）、
-モノクロ送出時のバースト停止、テストパターン生成モード、PAL（ハノーバーバーは正しく実装すれば副産物として出るはず）、
-ld-decode の .tbc 書き出し。</p>
+
 </div>
