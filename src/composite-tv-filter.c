@@ -166,6 +166,7 @@ struct composite_tv {
 	float beat_norm;
 	float burst_len; /* reception burst duration */
 	bool glitch_on;  /* the reception group's checkbox */
+	bool playback_on; /* the playback group's checkbox */
 	float glitch_fs; /* receiver state the group imposes while active: */
 	float glitch_h_hold;
 	float glitch_v_hold;
@@ -550,15 +551,18 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->beat_norm = (float)(obs_data_get_double(s, "beat_freq") * MHZ_TO_NORM);
 	f->burst_len = (float)obs_data_get_double(s, "burst_len");
 
-	f->flagging = pb ? (float)obs_data_get_double(s, "flagging") : 0.0f;
-	f->flag_wave = pb ? (float)obs_data_get_double(s, "flag_wave") : 0.0f;
-	f->head_switch = pb ? (float)obs_data_get_double(s, "head_switch") : 0.0f;
-	f->peaking = pb ? (float)obs_data_get_double(s, "peaking") : 0.0f;
-	f->dropout = pb ? (float)obs_data_get_double(s, "dropout") : 0.0f;
+	/* Same arrangement for the playback half: raw values here, the gate in
+	 * apply_params(), so a Playback trigger can switch the group on. */
+	f->playback_on = pb;
+	f->flagging = (float)obs_data_get_double(s, "flagging");
+	f->flag_wave = (float)obs_data_get_double(s, "flag_wave");
+	f->head_switch = (float)obs_data_get_double(s, "head_switch");
+	f->peaking = (float)obs_data_get_double(s, "peaking");
+	f->dropout = (float)obs_data_get_double(s, "dropout");
 	f->dropout_mode = (int)obs_data_get_int(s, "dropout_mode");
-	f->tape_damage = pb ? (float)obs_data_get_double(s, "tape_damage") : 0.0f;
+	f->tape_damage = (float)obs_data_get_double(s, "tape_damage");
 	f->tape_damage_pos = (float)obs_data_get_double(s, "tape_damage_pos");
-	f->damage_speed = pb ? (float)obs_data_get_double(s, "tape_damage_drift") : 0.0f;
+	f->damage_speed = (float)obs_data_get_double(s, "tape_damage_drift");
 	f->sweep_sec = (float)obs_data_get_double(s, "sweep_sec");
 
 	f->degauss_len = (float)obs_data_get_double(s, "degauss_len");
@@ -853,6 +857,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 {
 	/* Fields alternate 0,PI,0,PI over the four-field sequence. */
 	const float field_base_phase = (f->field_counter & 1u) ? (float)NS_PI : 0.0f;
+	/* The playback group is live while ticked or for the sweep after a
+	 * Playback trigger - the tape's faults at the strengths set in the
+	 * group, the crease crossing the picture once. */
+	const bool pact = f->playback_on || f->burst_pb > 0.0f;
 
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
@@ -864,7 +872,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "audio_gain", f->audio_gain);
-	set_f(e, "peaking", f->peaking);
+	set_f(e, "peaking", pact ? f->peaking : 0.0f);
 	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
 	/* The setting is a scan line of the 486-line frame, which is what the
 	 * viewer sees; the signal itself only has 243 rows per field, so two
@@ -1008,7 +1016,6 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * the hotkeys still work from a clean picture. Each fault answers to the
 	 * burst of the half it belongs to - a reception burst leaves the tape
 	 * alone and a playback burst leaves the aerial alone. */
-	const float bpb = f->burst_pb;
 	/* Two-ray physics of interference fading: a deep dip means a second path
 	 * of nearly equal strength arriving in antiphase - and a path like that
 	 * IS a ghost. So as the fade approaches its trough, an echo stands up,
@@ -1031,17 +1038,17 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "h_jitter", act ? f->h_jitter : 0.0f);
 	/* Flagging can bend either way - the sign of the tension error decides -
 	 * and a wandering tension makes the bend wave. The wobble is two slow
-	 * incommensurate sines, so the flag never settles into a loop, and the
-	 * burst pushes away from zero in whichever direction is already live. */
-	float flag_eff =
-		f->flagging + f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
-	flag_eff += bpb * 0.6f * (flag_eff < 0.0f ? -1.0f : 1.0f);
+	 * incommensurate sines, so the flag never settles into a loop. */
+	float flag_eff = 0.0f;
+	if (pact)
+		flag_eff = f->flagging +
+			   f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
 	set_f(e, "flagging", clampf(flag_eff, -2.0f, 2.0f));
-	set_f(e, "head_switch", clampf(f->head_switch + bpb * 0.5f, 0.0f, 2.0f));
+	set_f(e, "head_switch", pact ? clampf(f->head_switch, 0.0f, 2.0f) : 0.0f);
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
 	 * the tube happens to be drawing. */
-	const float dop = clampf(f->dropout + bpb * 0.6f, 0.0f, 1.6f);
+	const float dop = pact ? clampf(f->dropout, 0.0f, 1.6f) : 0.0f;
 	float prob = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
@@ -1057,7 +1064,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* The crease is placed rather than rolled for: the slider is how many
 	 * line periods of signal it takes out, so 0.5 is a whole line and
 	 * anything past that wraps onto the rows below. */
-	set_f(e, "damage_len", f->tape_damage * 2.0f);
+	set_f(e, "damage_len", pact ? f->tape_damage * 2.0f : 0.0f);
 	double dpos = (double)f->tape_damage_pos + f->damage_pos;
 	set_f(e, "damage_line", floorf((float)(dpos - floor(dpos)) * (float)(FIELD_H - 1)) + (float)SIG_VBI_ROWS);
 
@@ -1225,7 +1232,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * burst sends it across at exactly one screen per sweep, which is what
 	 * that setting means, and zeroing everything hands the band back to its
 	 * own slider. */
-	float damage_speed = f->damage_speed + (f->burst_pb > 0.0f ? 1.0f / sweep : 0.0f);
+	float damage_speed = (f->playback_on ? f->damage_speed : 0.0f) + (f->burst_pb > 0.0f ? 1.0f / sweep : 0.0f);
 	if (damage_speed != 0.0f) {
 		double p = f->damage_pos + (double)damage_speed * dt;
 		f->damage_pos = p - floor(p);
@@ -1495,10 +1502,10 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_GHOST_DELAY 24.0
 #define DEF_H_JITTER 0.0
 #define DEF_FADING 0.0
-#define DEF_FLAGGING 0.0
+#define DEF_FLAGGING 0.5
 #define DEF_FLAG_WAVE 0.0
-#define DEF_HEAD_SWITCH 0.0
-#define DEF_DROPOUT 0.0
+#define DEF_HEAD_SWITCH 0.4
+#define DEF_DROPOUT 0.5
 #define DEF_DROPOUT_MODE 0
 #define DEF_TAPE_DAMAGE 0.0
 #define DEF_TAPE_DAMAGE_POS 0.5
