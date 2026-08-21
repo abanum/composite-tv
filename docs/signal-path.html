@@ -212,7 +212,8 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
   <div class="eyebrow">Composite TV — Signal Path Reference</div>
   <h1>コンポジットTV 信号経路図</h1>
   <p class="lede">キャプチャから送出までの全経路。各段が模している仮想機器、段間を流れる信号の形式、
-  そしてすべてのノイズ／グリッチの注入点とその物理的正当性。v1.0.5 + フルライン化・信号出力・時間軸誤差の信号化・受像機追従（B2）まで反映。</p>
+  そしてすべてのノイズ／グリッチの注入点とその物理的正当性。<b>v1.1.0</b> 時点——フルラインの同期・バースト・VBI、信号出力と音声搬送波、
+  時間軸誤差の信号化、受像機側の同期・利得系（水平／垂直の発振器とキー付きAGC）まで反映。</p>
 </header>
 
 <div class="legend">
@@ -224,7 +225,7 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
 <h2><span class="no">01</span>全体トポロジー</h2>
 <div class="scroller">
 <figure>
-<svg viewBox="0 0 960 330" role="img" aria-label="OBSソースからEncode、Detectを経て、上段はDecode、DisplayからOBSの番組へ、下段はPackからコンポジットTV信号ソース、Spout Filterを経て外部デコーダへ分岐する経路図" font-family="'IBM Plex Sans JP',sans-serif" font-size="12.5">
+<svg viewBox="0 0 960 325" role="img" aria-label="OBSソースからEncode、Detectを経て、上段はDecode、DisplayからOBSの番組へ、下段はPackからコンポジットTV信号ソース、Spout Filterを経て外部デコーダへ分岐する経路図。検波後の信号は受像機の同期・利得系にも分岐し、その測定結果がDecodeとDisplayへ戻る" font-family="'IBM Plex Sans JP',sans-serif" font-size="12.5">
   <defs>
     <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
@@ -232,58 +233,76 @@ td .why { display: block; color: var(--muted); font-size: 12.5px; }
     <marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M0 0 L10 5 L0 10 z" fill="var(--cyan)"/>
     </marker>
+    <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="var(--warn)"/>
+    </marker>
   </defs>
   <g fill="none" stroke="currentColor" stroke-width="1.3">
-    <rect x="14"  y="52" width="104" height="52" rx="5"/>
-    <rect x="190" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
-    <rect x="382" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
-    <rect x="574" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
-    <rect x="766" y="52" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
-    <rect x="382" y="212" width="120" height="52" rx="5" stroke="var(--cyan)" stroke-width="1.6"/>
-    <rect x="574" y="212" width="120" height="52" rx="5" stroke="var(--cyan)"/>
-    <rect x="766" y="212" width="140" height="52" rx="5" stroke-dasharray="5 4"/>
+    <rect x="14"  y="130" width="104" height="52" rx="5"/>
+    <rect x="190" y="130" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="382" y="130" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="574" y="130" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="766" y="130" width="120" height="52" rx="5" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="520" y="20"  width="380" height="56" rx="5" stroke="var(--warn)" stroke-width="1.6"/>
+    <rect x="382" y="250" width="120" height="52" rx="5" stroke="var(--cyan)" stroke-width="1.6"/>
+    <rect x="574" y="250" width="120" height="52" rx="5" stroke="var(--cyan)"/>
+    <rect x="766" y="250" width="140" height="52" rx="5" stroke-dasharray="5 4"/>
   </g>
   <g fill="currentColor" text-anchor="middle">
-    <text x="66"  y="74">OBS ソース</text><text x="66" y="92" font-size="11" opacity=".65">映像 (任意サイズ)</text>
-    <text x="250" y="74" font-weight="600">Encode</text><text x="250" y="92" font-size="11" opacity=".65">送出側（局・デッキ）</text>
-    <text x="442" y="74" font-weight="600">Detect</text><text x="442" y="92" font-size="11" opacity=".65">伝搬路＋検波器</text>
-    <text x="634" y="74" font-weight="600">Decode</text><text x="634" y="92" font-size="11" opacity=".65">TVの映像回路</text>
-    <text x="826" y="74" font-weight="600">Display</text><text x="826" y="92" font-size="11" opacity=".65">ブラウン管</text>
-    <text x="442" y="234" fill="var(--cyan)" font-weight="600">Pack</text><text x="442" y="252" font-size="11" opacity=".65">16bit / 8bit＋ヘッダ行</text>
-    <text x="634" y="234">「コンポジットTV 信号」</text><text x="634" y="252" font-size="11" opacity=".65">コンパニオンソース</text>
-    <text x="836" y="234">Spout Filter →</text><text x="836" y="252" font-size="11" opacity=".65">外部NTSCデコーダ</text>
+    <text x="66"  y="152">OBS ソース</text><text x="66" y="170" font-size="11" opacity=".65">映像 (任意サイズ)</text>
+    <text x="250" y="152" font-weight="600">Encode</text><text x="250" y="170" font-size="11" opacity=".65">送出側（局・デッキ）</text>
+    <text x="442" y="152" font-weight="600">Detect</text><text x="442" y="170" font-size="11" opacity=".65">伝搬路＋検波器</text>
+    <text x="634" y="152" font-weight="600">Decode</text><text x="634" y="170" font-size="11" opacity=".65">TVの映像回路</text>
+    <text x="826" y="152" font-weight="600">Display</text><text x="826" y="170" font-size="11" opacity=".65">ブラウン管</text>
+    <text x="710" y="42" fill="var(--warn)" font-weight="600">受像機の同期・利得系</text>
+    <text x="710" y="61" font-size="11" opacity=".7">Track → Flywheel ／ VFlywheel ／ Agc（各 263×1）</text>
+    <text x="442" y="272" fill="var(--cyan)" font-weight="600">Pack</text><text x="442" y="290" font-size="11" opacity=".65">16bit / 8bit＋ヘッダ行</text>
+    <text x="634" y="272">「コンポジットTV 信号」</text><text x="634" y="290" font-size="11" opacity=".65">コンパニオンソース</text>
+    <text x="836" y="272">Spout Filter →</text><text x="836" y="290" font-size="11" opacity=".65">外部NTSCデコーダ</text>
   </g>
   <g stroke="currentColor" stroke-width="1.3" fill="none" color="currentColor">
-    <line x1="118" y1="78" x2="184" y2="78" marker-end="url(#ar)"/>
-    <line x1="310" y1="78" x2="376" y2="78" marker-end="url(#ar)"/>
-    <line x1="502" y1="78" x2="568" y2="78" marker-end="url(#ar)"/>
-    <line x1="694" y1="78" x2="760" y2="78" marker-end="url(#ar)"/>
-    <line x1="886" y1="78" x2="936" y2="78" marker-end="url(#ar)"/>
+    <line x1="118" y1="156" x2="184" y2="156" marker-end="url(#ar)"/>
+    <line x1="310" y1="156" x2="376" y2="156" marker-end="url(#ar)"/>
+    <line x1="502" y1="156" x2="568" y2="156" marker-end="url(#ar)"/>
+    <line x1="694" y1="156" x2="760" y2="156" marker-end="url(#ar)"/>
+    <line x1="886" y1="156" x2="936" y2="156" marker-end="url(#ar)"/>
+  </g>
+  <g stroke="var(--warn)" stroke-width="1.3" fill="none" color="var(--warn)">
+    <path d="M538 130 L538 82" marker-end="url(#arw)"/>
+    <path d="M634 76 L634 124" marker-end="url(#arw)"/>
+    <path d="M826 76 L826 124" marker-end="url(#arw)"/>
+  </g>
+  <g font-size="10.5" fill="var(--warn)">
+    <text x="530" y="103" text-anchor="end">同期・バーストを実測</text>
+    <text x="642" y="103">バースト位相・キラー・利得</text>
+    <text x="834" y="103">走査タイミング</text>
   </g>
   <g stroke="var(--cyan)" stroke-width="1.3" fill="none" color="var(--cyan)">
-    <path d="M442 104 L442 206" marker-end="url(#arc)"/>
-    <path d="M250 104 L250 160 L400 160 L400 206" stroke-dasharray="5 4" marker-end="url(#arc)"/>
-    <line x1="502" y1="238" x2="568" y2="238" marker-end="url(#arc)"/>
-    <line x1="694" y1="238" x2="760" y2="238" marker-end="url(#arc)"/>
+    <path d="M442 182 L442 244" marker-end="url(#arc)"/>
+    <path d="M250 182 L250 222 L400 222 L400 244" stroke-dasharray="5 4" marker-end="url(#arc)"/>
+    <line x1="502" y1="276" x2="568" y2="276" marker-end="url(#arc)"/>
+    <line x1="694" y1="276" x2="760" y2="276" marker-end="url(#arc)"/>
   </g>
   <g font-size="11" fill="var(--cyan)">
-    <text x="452" y="132">タップ1: 受信後（全劣化込み）</text>
-    <text x="258" y="132">タップ0: エンコード出力（破線）</text>
-    <text x="508" y="228">毎フレーム公開</text>
+    <text x="120" y="211">タップ0: エンコード出力（破線）</text>
+    <text x="452" y="205">タップ1: 受信後（全劣化込み）</text>
+    <text x="535" y="266" text-anchor="middle" font-size="10.5">毎フレーム公開</text>
   </g>
   <g font-size="11" fill="currentColor" opacity=".65" text-anchor="middle">
-    <text x="343" y="70">コンポジット</text>
-    <text x="535" y="70">受信済み信号</text>
-    <text x="727" y="70">RGBフィールド</text>
-    <text x="912" y="66">番組へ</text>
+    <text x="343" y="148">コンポジット</text>
+    <text x="535" y="148">受信済み信号</text>
+    <text x="727" y="148">RGBフィールド</text>
+    <text x="912" y="144">番組へ</text>
   </g>
   <g font-size="11">
-    <rect x="519" y="88" width="10" height="10" fill="var(--cyan)" rx="2"/>
-    <text x="535" y="97" fill="var(--cyan)">デバッグ波形はここをトレース</text>
+    <rect x="452" y="222" width="10" height="10" fill="var(--cyan)" rx="2"/>
+    <text x="468" y="231" fill="var(--cyan)">デバッグ波形はここをトレース</text>
   </g>
 </svg>
-<figcaption>経路は検波器の出力で二手に分かれる。上段＝内部の受像機（番組に映る絵）、下段＝信号のままの送出。
-Pack は常時走っており、フィルタの表示モードに関係なく信号ソースから取り出せる。</figcaption>
+<figcaption>経路は検波器の出力で三手に分かれる。<b>受像機の同期・利得系</b>（琥珀）は受信信号から同期・バースト・
+同期先端レベルをライン毎に実測し、その結果だけが Decode（色の基準とキラー、AGC利得）と Display（走査タイミング）を動かす
+＝受像機はエンコーダが何をしたかを知らない。<b>下段</b>（シアン）は信号のままの送出で、Pack は常時走っており
+フィルタの表示モードに関係なく信号ソースから取り出せる。</figcaption>
 </figure>
 </div>
 
@@ -329,7 +348,7 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
     <li><i class="dot wa"></i><span><b>ヘッドスイッチのRF途切れ（ノイズ帯）</b> — 下端数ラインが復調不能に。<span class="why">これもデッキ内の現象だが実装は検波段。千切れ（Encode）と同じ帯形状で整列</span></span></li>
     <li><i class="dot ok"></i><span><b>ゴースト</b> — 遅延した反射波の加算。Y/C分離前なので色にじみを伴う本物の多重像。同期にもゴーストが乗る <span class="p">compositeAt(n−delay)</span></span></li>
     <li><i class="dot ok"></i><span><b>砂嵐（電界強度）</b> — ライス包絡線検波: 搬送波+帯域制限雑音の包絡線。輝度は一様乱数ではなく<b>レイリー分布</b>。負変調なので大振幅ほど暗い <span class="p">env=|A+n|, IF帯域, 最小雑音</span></span></li>
-    <li><i class="dot ok"></i><span><b>AGC</b> — 検波レベルとハンチング（行ごとの明滅） <span class="p">snow_level, agc_jitter</span></span></li>
+    <li><i class="dot ok"></i><span><b>検波レベル</b> — 砂嵐側の静的な正規化（＝巻き上がりきったAGCの定常利得）。動的なAGCは次段の受像機側 <span class="p">snow_level</span></span></li>
   </ul>
 </div>
 
@@ -339,13 +358,30 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
 </div></div>
 
 <div class="stage">
+  <div class="stage-head"><span class="pass">TRACK / FLYWHEEL / VFLYWHEEL / AGC</span><span class="gear">受像機の同期・利得系 — 同期分離器・AFC・バーストゲート・AGC</span><span class="role">受信信号を実測する。ここから下流は送出側を一切参照しない</span></div>
+  <ul class="inj">
+    <li><i class="dot ok"></i><span><b>同期分離器（整合フィルタ）</b> — 67サンプル窓を±30の範囲で滑らせ、和が最小の位置＝同期パルスとする。実機の積分型分離器と同じで、雑音に対し約8倍の余裕を稼ぐ。<span class="why">雑音が勝つと最小値がゲート内のランダムな位置に落ち、そこから水平の泳ぎ・引き裂きが創発する</span> <span class="p">PSTrack → trk.r, trk.a</span></span></li>
+    <li><i class="dot ok"></i><span><b>バーストゲート相関＋CFAR</b> — 分離器が決めた位置を基準に9サイクルを相関検出。同期底部を雑音基準として引き、砂嵐で振幅が過大評価されるのを防ぐ <span class="p">trk.g（位相）, trk.b（振幅−雑音）</span></span></li>
+    <li><i class="dot ok"></i><span><b>垂直積分器</b> — VBI 9行それぞれで「ライン中どれだけが同期レベルに沈んでいるか」を測る。幅広の切り込みは充電し、幅狭の等化は充電しない <span class="p">trk.b（VBI行）</span></span></li>
+    <li><i class="dot ok"></i><span><b>水平発振器（フライホイール）</b> — 毎ライン自走分だけ位相が進み、同期がゲート内にある間だけ位相比較が引き戻す。H-HOLDのデチューンが引き込み範囲を超えると位相が滑り続ける <span class="p">PSFlywheel</span></span></li>
+    <li><i class="dot ok"></i><span><b>垂直発振器（トリガ式・片側）</b> — 同期パルスは発振器を早く発火させることしかできないので、設計上わずかに遅めに自走させランプ終盤で捕まえる。V-HOLDの±で外れ方が非対称になるのはこのため <span class="p">PSVFlywheel</span></span></li>
+    <li><i class="dot ok"></i><span><b>キー付きAGC</b> — 自前の水平位相でキーを打ち、同期先端とバックポーチの差を規定値に保つ二次ループ（帯域8Hz）。ハンチングのツマミはこのループの減衰不足＝リミットサイクル <span class="p">PSAgc</span></span></li>
+  </ul>
+</div>
+
+<div class="wire"><div class="stem"></div><div class="fmt">
+  RGBA32F / 263×1 ×4本 <span class="what">— 絵ではなく測定値。</span>同期誤差・バースト位相・バースト振幅・信頼度／発振器位相／垂直位相／AGC利得<br>
+  <span class="taps">フィールドを跨いで状態を持ち越す（ピンポン）ため、蛇行も回転もAGCの脈動も再ロールせずに這う</span>
+</div></div>
+
+<div class="stage">
   <div class="stage-head"><span class="pass">DECODE</span><span class="gear">受像機 — Y/C分離・同期検波</span><span class="role">信号から絵へ戻す。754×243の有効映像だけを読む</span></div>
   <ul class="inj">
     <li><i class="dot ok"></i><span><b>Y/C分離</b> — バンドパス(安物)/2ラインコム/3ラインコム。ドットクロール・クロスカラーは方式差から<b>自然発生</b>（描いていない）</span></li>
     <li><i class="dot ok"></i><span><b>バーストゲートAFPC</b> — Trackパスがライン毎に受信信号のバーストを相関検出し、その実測位相を復調基準にする。バーストが検出できないと発振器は自走してドリフト <span class="p">PSTrack → trk.g</span></span></li>
     <li><i class="dot ok"></i><span><b>カラーキラー（自動）</b> — 実測バースト振幅が閾値を割ると色を殺す。砂嵐がモノクロになるのは電界強度を見ているからではなく、バーストが雑音に沈むから <span class="p">trk.b → lock</span></span></li>
-    <li><i class="dot wa"></i><span><b>カラーキラー</b> — チェックボックス。<span class="why">実機はバースト振幅で自動判定（同期対応済みなので将来は自動化可能）</span></span></li>
-    <li><i class="dot wa"></i><span><b>副搬送波位相ドリフト</b> — 電界強度&lt;0.08でのみ発火するゲート近似。<span class="why">「映像があればバーストに同期する」の代用</span></span></li>
+    <li><i class="dot ok"></i><span><b>副搬送波位相ドリフト</b> — バーストにロックできない間だけ発振器が自走してドリフトする。<span class="why">以前の「電界強度&lt;0.08で発火」ゲートは廃止。ロックの有無は実測バーストが決める</span> <span class="p">lock ← trk.b</span></span></li>
+    <li><i class="dot ok"></i><span><b>AGC利得の適用</b> — 受像機のAGCループが出したライン毎の利得を輝度・クロマに掛ける。<span class="why">定常値ではなく「定常からのずれ」を掛けるので、調整済みの明るさは変わらず過渡だけが出る</span> <span class="p">agc_tex → gain</span></span></li>
     <li><i class="dot ok"></i><span><b>コントラスト／ブライトネス</b> — 映像回路の利得・ペデスタル</span></li>
   </ul>
 </div>
@@ -362,7 +398,7 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
     <li><i class="dot ok"></i><span><b>消磁</b> — 減衰交流によるうねり・R/Bミスコンバージェンス・虹色純度ムラ</span></li>
     <li><i class="dot ok"></i><span><b>管の構造</b> — インターレース織り、ビーム径、走査線、残光(max合成)、シャドウマスク/グリル＋ダンパー線、曲率、ビネット、オーバースキャン</span></li>
     <li><i class="dot ok"></i><span><b>電源エンベロープ</b> — ウォームアップ／垂直・水平コラプス／残光</span></li>
-    <li><i class="dot tap"></i><span><b>デバッグ波形オーバーレイ</b> — 検波後信号の1ラインをトレース（管面より上に描く。表示段は波形に影響しない）</span></li>
+    <li><i class="dot tap"></i><span><b>デバッグ波形オーバーレイ</b> — 検波後信号の1ライン全体（ポーチ→同期→バースト→有効映像）をトレース。受像機の内部状態も重ねる: <b>アンバー</b>＝水平発振器の位相、<b>シアン</b>＝分離器の信頼度、<b>マゼンタ</b>＝AGC利得（管面より上に描くので表示段は波形に影響しない）</span></li>
   </ul>
 </div>
 
@@ -372,9 +408,11 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
 
 </div><!-- rail -->
 
-<p class="note"><b>一時発動の注入経路</b> — ドックとホットキーは信号を直接触らず、<b>パラメータを瞬間的に押し上げる</b>だけです。
-受信不良バースト（burst_rx）はジッタ・垂直ロールへ、再生不良バースト（burst_pb）はフラッギング・ヘッドスイッチング・ドロップアウトへ、
-それぞれ独立したエンベロープで加算されます。消磁・電源も同様にパラメータ経由です。</p>
+<p class="note"><b>一時発動の経路</b> — ドックとホットキーは信号を直接触りません。押すと該当するグリッチ<b>グループが設定時間だけ有効になる</b>だけです
+（チェックを入れっぱなしにしたのと同じ状態）。グループの設定——受信不良なら発動中の電界強度・H-HOLD・V-HOLD・ゴースト・ジッタ・フェージング、
+再生不良ならフラッギング・ヘッドスイッチング・ドロップアウトとテープ傷の1周掃引——が設定値いっぱいで効き始め、指数的にメインの状態へ戻ります。
+その後の復帰（砂嵐からの立ち上がり、色の戻り、水平・垂直の再ロック、AGCの落ち着き）は受像機の物理が自力で行い、直接注入している演出はありません。
+消磁・電源も同様にパラメータ経由です。</p>
 
 <h2><span class="no">03</span>送出される1フィールドの構造（910×264）</h2>
 <div class="scroller">
@@ -455,23 +493,39 @@ ld-decode の .tbc（4fsc・910×263・16bit）と幾何が一致し、ヘッダ
 <tr><td>水平同期ジッタ</td><td>Encode（時間軸）</td><td>伝送路</td><td><span class="chip ok">✓ 一致</span><span class="why">バースト・クロマ・同期が一体で揺れる</span></td></tr>
 <tr><td>干渉ビート</td><td>Encode 末尾</td><td>受信アンテナの混信</td><td><span class="chip wa">△ 位置</span><span class="why">検波前加算なので効果は等価。タップ0に乗る不純のみ</span></td></tr>
 <tr><td>音声搬送波</td><td>Encode</td><td>音声送信機（+4.5MHz）</td><td><span class="chip ok">✓ 一致</span><span class="why">ビート音・点模様は受信側で自然発生</span></td></tr>
-<tr><td>砂嵐・ゴースト・AGC</td><td>Detect</td><td>伝搬路〜検波器</td><td><span class="chip ok">✓ 一致</span><span class="why">レイリー分布は検波の数学から</span></td></tr>
+<tr><td>砂嵐・ゴースト</td><td>Detect</td><td>伝搬路〜検波器</td><td><span class="chip ok">✓ 一致</span><span class="why">レイリー分布は検波の数学から</span></td></tr>
+<tr><td>フェージング</td><td>Detect（実効電界）</td><td>伝搬路（ダクト・二波干渉・シンチレーション）</td><td><span class="chip ok">✓ 一致</span><span class="why">機構別に3成分。深い谷では多重伝搬＝ゴーストが立つ</span></td></tr>
 <tr><td>ドロップアウト＋DOC</td><td>Detect</td><td>デッキ内（RF喪失＋補償回路）</td><td><span class="chip wa">△ 位置</span><span class="why">1H遅延線が前ラインのテクスチャを要するため。色落ち等の効果は正確</span></td></tr>
 <tr><td>ヘッドスイッチのノイズ帯</td><td>Detect</td><td>デッキ内（ヘッド切替のRF途切れ）</td><td><span class="chip wa">△ 位置</span><span class="why">効果は正確。タップ0に乗らない</span></td></tr>
 <tr><td>Y/C分離・ドットクロール・クロスカラー</td><td>Decode</td><td>受像機</td><td><span class="chip ok">✓ 一致</span><span class="why">方式差からの自然発生</span></td></tr>
 <tr><td>バーストロック</td><td>Track→Decode</td><td>受像機のバーストゲートAFPC</td><td><span class="chip ok">✓ 一致</span><span class="why">受信信号からライン毎に実測。B2で実装</span></td></tr>
 <tr><td>同期分離＋水平AFC</td><td>Track→Flywheel→Display</td><td>受像機の同期系</td><td><span class="chip ok">✓ 一致</span><span class="why">実測＋フライホイール。弱電界の乱れ・ドロップアウト後の引きずりが創発</span></td></tr>
 <tr><td>カラーキラー／位相ドリフト</td><td>Track→Decode</td><td>受像機（バースト検出で自動）</td><td><span class="chip ok">✓ 一致</span><span class="why">実測バースト振幅で自動判定・自走ドリフト（B2）。手動モードも残置</span></td></tr>
-<tr><td>垂直ロール</td><td>Display</td><td>受像機のV-Hold</td><td><span class="chip ok">✓ 一致</span><span class="why">信号側に置かないのが正しい（垂直の実測追従はB3候補）</span></td></tr>
+<tr><td>垂直同期（V-HOLD）</td><td>Track→VFlywheel→Display</td><td>受像機の垂直発振器</td><td><span class="chip ok">✓ 一致</span><span class="why">VBIの積分器充電でトリガする片側性の発振器。回転・非対称な外れ方・再ロックが創発。手動の垂直ロールは廃止</span></td></tr>
+<tr><td>水平同期（H-HOLD）</td><td>Flywheel→Display</td><td>受像機の水平発振器</td><td><span class="chip ok">✓ 一致</span><span class="why">寄り→蛇行（安定限界）→位相スリップ（斜めコピー）が一つの漸化式から</span></td></tr>
+<tr><td>AGC・ハンチング</td><td>Track→Agc→Decode</td><td>受像機のキー付きAGC</td><td><span class="chip ok">✓ 一致</span><span class="why">同期先端を実測する二次ループ。ドロップアウト後の白筋・信号消失時の暗転・復帰時の白飛びが創発</span></td></tr>
 <tr><td>消磁・マスク・残光・曲率・電源</td><td>Display</td><td>ブラウン管</td><td><span class="chip ok">✓ 一致</span></td></tr>
 </table>
 </div>
 
 <h2><span class="no">05</span>既知の近似と次の一手</h2>
-<p><b>B2（受像機追従）は実装済み</b>: 同期分離器・水平AFC・バーストゲートAFPC・自動カラーキラーが
-Track/Flywheel パス（263×1のライン解析）として入り、以前「代役」だったバーストロックと
-「専用コード」だったドロップアウト後の乱れは、実測からの創発に置き換わりました。
-残る△は「効果は正確だが実装段が物理と1段ずれている」類（ドロップアウト・ヘッドスイッチノイズ・
-干渉ビートの実装位置）のみで、見た目と送出信号の正しさには影響しません。
-未着手の候補: 垂直同期の実測追従（B3）、同期チップ実測によるAGC、モノクロ送出時のバースト停止。</p>
+<p><b>受像機側は一通り実装済みです。</b>同期分離器・水平AFC・バーストゲートAFPC・自動カラーキラー（B2）、
+垂直同期のトリガ式発振器（B3）、キー付きAGCループが Track / Flywheel / VFlywheel / Agc の4パスとして入り、
+かつて「代役」だったバーストロック、「専用コード」だったドロップアウト後の乱れ、「乱数」だったAGCハンチング、
+「表示側のアニメーション」だった垂直ロールは、すべて実測からの創発に置き換わりました。</p>
+<p><b>残る近似</b>は、いずれも見た目と送出信号の正しさには影響しない範囲です。</p>
+<ul>
+  <li><b>実装段が物理と1段ずれているもの</b>（△印）— ドロップアウトと補償、ヘッドスイッチのノイズ帯、干渉ビート。
+    どれも効果は正確ですが、本来はデッキ内／受信アンテナで起きる現象を、実装の都合で検波段・エンコード段に置いています。
+    結果としてタップ0（デッキ出力）に乗る／乗らないが物理とわずかに食い違います。</li>
+  <li><b>4.5MHz 音声トラップが無い</b> — 実機は映像経路から音声搬送波をトラップで抜きますが、本実装にはその段がありません。
+    音声搬送波を上げると細かい点模様と 920kHz（4.5−3.58）のヘリンボーンが残ります。<span class="why">なお櫛形フィルタでは抜けません。
+    4.5MHz はライン周波数のちょうど286倍＝ライン毎に同位相なので、コムは素通しどころか強め合います</span></li>
+  <li><b>水平同期ジッタのツマミ</b> — 受像機側の揺れは弱電界で分離器の雑音から自然に出るようになったため、
+    このノブは「電波はきれいなのに送出側の時間軸が揺れている」場合用の送出側ショートカットとして残しています。</li>
+  <li><b>垂直の解像度</b> — 1フィールド＝263行の近似（実際は262.5行）。半ラインぶんの位相はヘッダのフィールド番号で持っています。</li>
+</ul>
+<p><b>次の一手の候補</b>: 4.5MHz トラップ段（＋「トラップ調整不良」でヘリンボーンを出す）、
+モノクロ送出時のバースト停止、テストパターン生成モード、PAL（ハノーバーバーは正しく実装すれば副産物として出るはず）、
+ld-decode の .tbc 書き出し。</p>
 </div>
