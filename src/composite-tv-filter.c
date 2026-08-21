@@ -883,7 +883,14 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
-	set_f(e, "afc_slop", f->h_hold);
+	/* H-HOLD: the knob detunes the line oscillator's free run. The AFC can
+	 * correct at most 0.08 * 30 = 2.4 samples per line, so hold is lost
+	 * near knob 0.39. Below that, a marginal-stability band drives the
+	 * serpentine limit cycle; above it the free-running phase winds the
+	 * raster round the line - about 4.5 diagonal copies at full detune. */
+	const float hh = f->h_hold;
+	set_f(e, "afc_freerun", 16.0f * hh * hh);
+	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, hh) * (1.0f - smoothstepf(0.36f, 0.55f, hh)));
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
