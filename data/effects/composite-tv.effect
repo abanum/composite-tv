@@ -36,6 +36,7 @@ uniform float vafc_freerun;       // V-HOLD detune of the field oscillator [rows
 // Debug waveform overlay
 uniform float scope_on;
 uniform float scope_line;         // field row to trace
+uniform float scope_top;          // 1: draw the panel at the top instead
 
 // Signal output (Pack): header-row metadata for the outside decoder
 uniform float pack_format;        // 1: 16-bit R+G, 2: 8-bit grayscale
@@ -1451,12 +1452,10 @@ float4 PSDisplay(VertData v) : TARGET
 		if (floor((float)base * field_row_step) + (float)VBI_ROWS == floor(scope_line))
 			outCol = lerp(outCol, float3(1.0, 0.15, 0.15), 0.30);
 
-		// The panel takes the whole frame: the trace no longer has to
-		// share it with the picture, so the full 63.5us line gets all
-		// the room there is. The picture stays faintly visible through
-		// the backdrop, marker included.
-		float y0 = 0.02;
-		float y1 = 0.98;
+		// The panel sits away from the line it is tracing, so the marker and
+		// the picture around it stay visible.
+		float y0 = (scope_top > 0.5) ? 0.02 : 0.62;
+		float y1 = y0 + 0.36;
 		if (v.uv.y > y0 && v.uv.y < y1) {
 			// The trace is drawn between this column's sample and the
 			// next one's, so a steep edge joins up instead of leaving
@@ -1476,12 +1475,6 @@ float4 PSDisplay(VertData v) : TARGET
 			outCol = lerp(outCol, float3(0.0, 0.02, 0.03), 0.82);
 			if (abs(val) < w || abs(val - 1.0) < w || abs(val - SYNC_LEVEL) < w)
 				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.85);
-			// Vertical landmarks, so the regions of the line read at a
-			// glance: sync edge, burst gate, start of active video.
-			if (abs(v.uv.x - (float)SYNC_EDGE / (float)SIG_W) < dx ||
-			    abs(v.uv.x - (float)BURST_START / (float)SIG_W) < dx ||
-			    abs(v.uv.x - (float)ACTIVE_OFFSET / (float)SIG_W) < dx)
-				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.45);
 			if (val > min(s0, s1) - w && val < max(s0, s1) + w)
 				outCol = float3(0.25, 1.0, 0.35);
 
