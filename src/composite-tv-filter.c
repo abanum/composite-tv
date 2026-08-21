@@ -230,6 +230,8 @@ struct composite_tv {
 	int fly_idx;
 	gs_texrender_t *vfly[2]; /* ping-pong: the field oscillator, one texel of state */
 	int vfly_idx;
+	gs_texrender_t *agc[2];  /* ping-pong: the keyed AGC, per-row gain */
+	int agc_idx;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -782,6 +784,8 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->flywheel[1]);
 	free_texrender(&f->vfly[0]);
 	free_texrender(&f->vfly[1]);
+	free_texrender(&f->agc[0]);
+	free_texrender(&f->agc[1]);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -934,7 +938,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	}
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
-	set_f(e, "agc_jitter", f->agc_jitter);
+	set_f(e, "agc_hunt", f->agc_jitter);
 	/* H-HOLD: the knob detunes the line oscillator's free run. The AFC can
 	 * correct at most 0.08 * 30 = 2.4 samples per line, so hold is lost
 	 * near knob 0.39. Below that, a marginal-stability band drives the
@@ -1366,10 +1370,23 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	if (vfl)
 		f->vfly_idx ^= 1;
 
+	/* The keyed AGC: per-row gain, keyed off the line oscillator's phase,
+	 * measuring the detector output. Needs the flywheel bound for its own
+	 * pass - and that binding is gone again the moment the pass ends. */
+	ensure_tr(&f->agc[0], GS_RGBA32F);
+	ensure_tr(&f->agc[1], GS_RGBA32F);
+	gs_texture_t *agc_prev = gs_texrender_get_texture(f->agc[1 - f->agc_idx]);
+	set_tex(e, "agc_prev", agc_prev ? agc_prev : input_tex);
+	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+	gs_texture_t *agc = (det && fly) ? run_pass(f, e, f->agc[f->agc_idx], SIG_H, 1, "Agc", det, cx, cy) : NULL;
+	if (agc)
+		f->agc_idx ^= 1;
+
 	/* Every technique end wipes the effect parameters, so the tracking
 	 * results may only be bound once ALL tracking passes have run. */
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+	set_tex(e, "agc_tex", agc ? agc : input_tex);
 
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
@@ -1397,6 +1414,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 	set_tex(e, "vfly_tex", vfl ? vfl : input_tex);
+	set_tex(e, "agc_tex", agc ? agc : input_tex);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
@@ -1567,8 +1585,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_set_list_default_tip(asp, DEF_ASPECT_MODE);
 
 	ctv_add_float_slider(p, "agc_level", obs_module_text("CompositeTV.AgcLevel"), 0.20, 0.95, 0.01, DEF_AGC_LEVEL);
-	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
-			     DEF_AGC_JITTER);
+	obs_property_t *aj = ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40,
+						  0.01, DEF_AGC_JITTER);
+	ctv_add_tip_note(aj, obs_module_text("CompositeTV.AgcJitter.Tip"));
 	obs_property_t *hh =
 		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), -1.0, 1.0, 0.01, DEF_H_HOLD);
 	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
