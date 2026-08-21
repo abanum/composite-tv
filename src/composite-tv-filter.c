@@ -853,14 +853,26 @@ static gs_texture_t *run_pass(struct composite_tv *f, gs_effect_t *e, gs_texrend
  * this has to run again before every pass or the D3D11 backend silently skips
  * the draw ("Not all shader parameters were set"). run_pass() is the only
  * caller precisely so that nobody has to remember this. */
+/* Exponential recovery of a triggered fault: full strength the moment it
+ * strikes, then a log-style fade to nothing by the end of the burst. t is
+ * the burst clock, 1 at the trigger and 0 when it is over. */
+static inline float burst_env(float t)
+{
+	return t > 0.0f ? (powf(20.0f, t) - 1.0f) / 19.0f : 0.0f;
+}
+
 static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, uint32_t cy)
 {
 	/* Fields alternate 0,PI,0,PI over the four-field sequence. */
 	const float field_base_phase = (f->field_counter & 1u) ? (float)NS_PI : 0.0f;
-	/* The playback group is live while ticked or for the sweep after a
-	 * Playback trigger - the tape's faults at the strengths set in the
-	 * group, the crease crossing the picture once. */
-	const bool pact = f->playback_on || f->burst_pb > 0.0f;
+	/* A ticked group holds its settings at full strength. A triggered one
+	 * strikes at full strength and then recovers exponentially over the
+	 * burst - most of it gone early, a long tail - the way an aerial
+	 * settles or a tape runs out of its bad stretch. burst_env() maps the
+	 * linear burst clock (1 at the trigger, 0 at the end) onto that. */
+	const float erx = f->glitch_on ? 1.0f : burst_env(f->burst_rx);
+	const float epb = f->playback_on ? 1.0f : burst_env(f->burst_pb);
+	const bool pact = epb > 0.0f;
 
 	set_v2(e, "field_size", (float)FIELD_W, (float)FIELD_H);
 	set_v2(e, "output_size", (float)cx, (float)cy);
@@ -872,7 +884,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "cutoff_q", f->cutoff_q);
 	set_f(e, "enc_chroma_gain", f->enc_chroma_gain);
 	set_f(e, "audio_gain", f->audio_gain);
-	set_f(e, "peaking", pact ? f->peaking : 0.0f);
+	set_f(e, "peaking", f->peaking * epb);
 	set_f(e, "scope_on", f->scope_on ? 1.0f : 0.0f);
 	/* The setting is a scan line of the 486-line frame, which is what the
 	 * viewer sees; the signal itself only has 243 rows per field, so two
@@ -911,9 +923,8 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * own receiver state - field strength, H-HOLD, V-HOLD - and its
 	 * faults; when it drops out again the physics takes the set back to
 	 * lock on its own. */
-	const bool act = f->glitch_on || f->burst_rx > 0.0f;
-	const float fading = act ? f->fading : 0.0f;
-	float fs_eff = act ? f->glitch_fs : f->field_strength;
+	const float fading = f->fading * erx;
+	float fs_eff = f->field_strength + (f->glitch_fs - f->field_strength) * erx;
 	float fade_dip = 0.0f;
 	if (fading > 0.0f) {
 		float fw = 0.50f * (float)sin(f->fade_phase1) + 0.35f * (float)sin(f->fade_phase2) +
@@ -931,14 +942,14 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * raster round the line - about 4.5 diagonal copies at full detune.
 	 * Both knobs are bipolar, centre = lock: the sign is the direction
 	 * of the detune, which way the copies lean and the frame rolls. */
-	const float hh = act ? f->glitch_h_hold : f->h_hold;
+	const float hh = f->h_hold + (f->glitch_h_hold - f->h_hold) * erx;
 	const float ha = fabsf(hh);
 	set_f(e, "afc_freerun", 16.0f * hh * ha);
 	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, ha) * (1.0f - smoothstepf(0.36f, 0.55f, ha)));
 	/* V-HOLD: the same story vertically. The trigger corrects 0.4 * 8 =
 	 * 3.2 rows per field, so hold is lost near knob 0.37; past it the
 	 * frame rolls, faster the further the detune. */
-	const float vh = act ? f->glitch_v_hold : f->v_hold;
+	const float vh = f->v_hold + (f->glitch_v_hold - f->v_hold) * erx;
 	set_f(e, "vafc_freerun", 24.0f * vh * fabsf(vh));
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
@@ -1021,7 +1032,7 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * IS a ghost. So as the fade approaches its trough, an echo stands up,
 	 * on the user's own ghost path if one is set, else on a wandering path
 	 * of its own. The wander is the reflection point moving. */
-	float gg = act ? f->ghost_gain : 0.0f;
+	float gg = f->ghost_gain * erx;
 	float gd = f->ghost_delay;
 	float two_ray = fading * smoothstepf(0.55f, 0.95f, fade_dip);
 	if (two_ray > 0.0f) {
@@ -1031,24 +1042,22 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	}
 	set_f(e, "ghost_gain", gg);
 	set_f(e, "ghost_delay", gd);
-	set_f(e, "beat_gain", act ? f->beat_gain : 0.0f);
+	set_f(e, "beat_gain", f->beat_gain * erx);
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
 	set_f(e, "vblank_lines", bar_lines(f));
-	set_f(e, "h_jitter", act ? f->h_jitter : 0.0f);
+	set_f(e, "h_jitter", f->h_jitter * erx);
 	/* Flagging can bend either way - the sign of the tension error decides -
 	 * and a wandering tension makes the bend wave. The wobble is two slow
 	 * incommensurate sines, so the flag never settles into a loop. */
-	float flag_eff = 0.0f;
-	if (pact)
-		flag_eff = f->flagging +
-			   f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
-	set_f(e, "flagging", clampf(flag_eff, -2.0f, 2.0f));
-	set_f(e, "head_switch", pact ? clampf(f->head_switch, 0.0f, 2.0f) : 0.0f);
+	float flag_eff =
+		f->flagging + f->flag_wave * (0.6f * (float)sin(f->flag_phase1) + 0.4f * (float)sin(f->flag_phase2));
+	set_f(e, "flagging", clampf(flag_eff * epb, -2.0f, 2.0f));
+	set_f(e, "head_switch", clampf(f->head_switch, 0.0f, 2.0f) * epb);
 	/* Dropout. It lives in the signal now, so its lengths are line periods
 	 * and its rate is per field row - nothing here depends on how many lines
 	 * the tube happens to be drawing. */
-	const float dop = pact ? clampf(f->dropout, 0.0f, 1.6f) : 0.0f;
+	const float dop = clampf(f->dropout, 0.0f, 1.6f) * epb;
 	float prob = 0.0f;
 	if (dop > 0.0f) {
 		/* The bottom of the slider sits on the measured ten dropouts a
