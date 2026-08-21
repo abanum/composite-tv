@@ -27,7 +27,8 @@ uniform texture2d flywheel_tex;   // Display: smoothed horizontal AFC estimate (
 uniform texture2d flywheel_prev;  // Flywheel: last field's state, for continuity
 uniform float killer_auto;        // 1: colour killer decides from the measured burst
 uniform float afc_drift;          // free-run frequency error of the line oscillator [smp/line]
-uniform float afc_slop;           // 0: healthy AFC, 1: H-HOLD nearly lost
+uniform float afc_slop;           // marginal-stability drive for the AFC's limit cycle
+uniform float afc_freerun;        // H-HOLD detune of the line oscillator [smp/line]
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -207,6 +208,7 @@ uniform float flash;              // discharge flash amount
 #define SYNC_EDGE 21              /* where the leading edge nominally falls */
 #define SYNC_SEARCH 30            /* gate half-width the separator hunts over */
 #define TRACK_SPAN 160.0          /* offset storage scale, samples */
+#define PHASE_SPAN 1024.0         /* oscillator phase storage scale: must hold a half line */
 #define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
@@ -854,16 +856,17 @@ float4 PSTrack(VertData v) : TARGET
 // to catch up with and paints the bend while it does, per-line jitter passes
 // through untouched, and as the sync sinks into noise the picture starts to
 // swim and finally tears diagonally - all from the same three terms.
-// afc_slop is the H-HOLD knob off its sweet spot. The healthy tracker below
-// is untouched by it; what the knob raises is the loop's own instability. An
-// AFC pushed past its stability margin does not decay to rest - it settles
-// into a LIMIT CYCLE, a sustained self-oscillation whose amplitude the
-// nonlinearity caps (van der Pol dynamics, the classic model for exactly
-// this). That is the serpentine of a set about to lose horizontal hold: it
-// never stops, it does not care how clean the signal is, and because the
-// oscillator state carries across fields the waves crawl instead of
-// re-rolling. At zero slop the cycle's target amplitude is zero and the
-// residual damping kills any leftover motion.
+// The H-HOLD knob detunes the line oscillator's free-run frequency
+// (afc_freerun, samples of extra advance per line). The AFC can correct at
+// most AFC_GAIN * SYNC_SEARCH samples per line, so small detune just parks
+// the picture off-centre; near that margin the loop's stability runs out
+// and it settles into a LIMIT CYCLE (afc_slop drives it), a sustained
+// self-oscillation whose amplitude the nonlinearity caps - van der Pol
+// dynamics, the serpentine of a set about to lose hold. Past the margin
+// the correction loses outright: the phase slips cycles, the raster winds
+// round the line like a barber pole, and the further the detune the more
+// diagonal copies fit on screen. State carries across fields, so both the
+// serpentine and the unlocked pattern crawl instead of re-rolling.
 float4 PSFlywheel(VertData v) : TARGET
 {
 	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
@@ -879,7 +882,7 @@ float4 PSFlywheel(VertData v) : TARGET
 	float ho = 0.0;
 	float vo = 0.0;
 	if (abs(pv.a - 0.618) < 0.01) {
-		h  = clamp((pv.r - 0.5) * TRACK_SPAN, -80.0, 80.0);
+		h  = clamp((pv.r - 0.5) * PHASE_SPAN, -(float)HALF_LINE, (float)HALF_LINE);
 		ho = clamp((pv.g - 0.5) * TRACK_SPAN, -80.0, 80.0);
 		vo = clamp((pv.b - 0.5) * 32.0, -16.0, 16.0);
 	}
@@ -897,9 +900,20 @@ float4 PSFlywheel(VertData v) : TARGET
 		float e = (t.r - 0.5) * TRACK_SPAN;
 		float q = t.a;
 
-		// The healthy flywheel: trust-weighted tracking, free-run drift
-		// for whatever trust is missing.
-		h += AFC_GAIN * q * (e - h) + (1.0 - q) * afc_drift;
+		// The line oscillator advances by its detune every line, and the
+		// phase detector can only correct it while the sync pulse falls
+		// inside the separator's gate. Within hold range this reduces to
+		// the old trust-weighted tracker (steady error = detune / gain);
+		// past it the correction per line loses to the detune, the loop
+		// slips cycles, and the phase runs away - horizontal unlock.
+		h += afc_freerun + (1.0 - q) * afc_drift;
+		float err = h - e;
+		if (abs(err) < (float)SYNC_SEARCH)
+			h -= AFC_GAIN * q * err;
+		// Phase is modulo the line. Each pass through coincidence lets
+		// the AFC grab and lose it again - the sticky crawl of a real
+		// unlocked raster.
+		h -= (float)SIG_W * floor(h / (float)SIG_W + 0.5);
 
 		// The limit cycle: negative damping inside the target amplitude,
 		// positive outside, so it neither dies nor blows up.
@@ -909,7 +923,7 @@ float4 PSFlywheel(VertData v) : TARGET
 		ho = clamp(ho + vo, -80.0, 80.0);
 	}
 
-	return float4(clamp(h / TRACK_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
+	return float4(clamp(h / PHASE_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
 		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 0.618);
 }
 
@@ -1143,8 +1157,8 @@ float lineShift(int li)
 	// is the honest fallback.
 	if (abs(fw.a - 0.618) > 0.01)
 		return 0.0;
-	/* tracker estimate plus the H-HOLD limit cycle */
-	return ((fw.r - 0.5) + (fw.g - 0.5)) * TRACK_SPAN / field_size.x;
+	/* oscillator phase plus the marginal AFC's limit cycle */
+	return ((fw.r - 0.5) * PHASE_SPAN + (fw.g - 0.5) * TRACK_SPAN) / field_size.x;
 }
 
 // Sample a scan ln, choosing the current or previous field for the weave.
@@ -1158,13 +1172,18 @@ float3 sampleLine(int lineIndex, float x)
 	float dx = spot_dx;
 	x += lineShift(lineIndex);
 
-	// A displaced line runs off the end of its active video, and what lies
-	// beyond that is the horizontal blanking interval - black. Without this the
-	// clamped sampler would smear the edge column instead, which is what made
-	// flagging look like a stretched copy of the picture rather than a bend
-	// into blanking.
-	if (x < 0.0 || x > 1.0)
+	// The beam scans at whatever phase the oscillator holds, so a displaced
+	// line wraps around the FULL 910-sample line, not just the active part.
+	// A small shift runs into the horizontal blanking interval - black, the
+	// same edge-into-blanking this used to clamp to - and once the AFC has
+	// lost hold entirely the accumulated slip carries the raster round and
+	// round: the picture repeats diagonally, barber-pole style, with the
+	// HBI crossing the screen as the classic slanted black bar.
+	float t = (float)ACTIVE_OFFSET + x * field_size.x;
+	t -= (float)SIG_W * floor(t / (float)SIG_W);
+	if (t < (float)ACTIVE_OFFSET)
 		return float3(0.0, 0.0, 0.0);
+	x = (t - (float)ACTIVE_OFFSET) / field_size.x;
 
 	float3 outCol;
 	if (useCur) {
@@ -1383,16 +1402,17 @@ float4 PSDisplay(VertData v) : TARGET
 				outCol = float3(0.25, 1.0, 0.35);
 
 			// Receiver-tracking traces, field rows mapped across the panel:
-			// amber = the AFC estimate the beam applies (fraction of the
-			// panel height = TRACK_SPAN samples full scale), cyan = the
-			// separator's per-line trust. What the tube does with timing
-			// is exactly the amber line.
+			// amber = the oscillator phase the beam applies (half a line
+			// each way full scale), cyan = the separator's per-line
+			// trust. What the tube does with timing is exactly the amber
+			// line.
 			float2 fuv = float2(v.uv.x, 0.5);
 			float4 fw2 = flywheel_tex.Sample(pointClamp, fuv);
 			float4 tk2 = track_tex.Sample(pointClamp, fuv);
-			float hshift = 0.0; /* -1..1 */
+			float hshift = 0.0; /* fraction of a full line, -0.5..0.5 */
 			if (abs(fw2.a - 0.618) < 0.01)
-				hshift = (fw2.r - 0.5) + (fw2.g - 0.5);
+				hshift = ((fw2.r - 0.5) * PHASE_SPAN + (fw2.g - 0.5) * TRACK_SPAN) /
+					 (float)SIG_W;
 			if (abs(val - (0.35 + hshift)) < w * 1.2)
 				outCol = float3(1.0, 0.72, 0.2);
 			if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
