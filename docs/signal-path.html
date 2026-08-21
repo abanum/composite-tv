@@ -357,7 +357,7 @@ Pack は常時走っており、フィルタの表示モードに関係なく信
 <div class="stage">
   <div class="stage-head"><span class="pass">DISPLAY</span><span class="gear">ブラウン管 — 偏向・蛍光体・管面</span><span class="role">ビームが絵を描く。ここに残る注入はすべて受像機側の現象</span></div>
   <ul class="inj">
-    <li><i class="dot ok"></i><span><b>垂直ロール</b> — V-Hold不良は<b>TVの故障</b>なのでここが正しい（信号の垂直同期は正常。外部デコーダは安定して映るのが正解）</span></li>
+    <li><i class="dot ok"></i><span><b>垂直AFC（V-HOLD）</b> — VBI行の積分器充電（切り込み−等化）でトリガをゲートする垂直発振器。V-HOLDでデチューン、砂嵐で切り込みが埋もれると自走して回る。手動の垂直ロールは廃止（信号の垂直同期は正常。外部デコーダは安定して映るのが正解） <span class="p">PSTrack → PSVFlywheel → PSDisplay</span></span></li>
     <li><i class="dot ok"></i><span><b>水平AFC（フライホイール）</b> — 同期分離器の実測誤差を約12ライン時定数で平均し、走査時に補正。遅い誤差は真っ直ぐに直り、段差（ヘッドスイッチ等）は追従中の曲がりとして映り、ライン毎のジッタは素通しになる。<span class="why">ドロップアウト後の乱れは、同期を食われた行で分離器が雑音に誤トリガし推定を汚すことから創発（専用コードは削除済み）</span> <span class="p">PSTrack → PSFlywheel → lineShift</span></span></li>
     <li><i class="dot ok"></i><span><b>消磁</b> — 減衰交流によるうねり・R/Bミスコンバージェンス・虹色純度ムラ</span></li>
     <li><i class="dot ok"></i><span><b>管の構造</b> — インターレース織り、ビーム径、走査線、残光(max合成)、シャドウマスク/グリル＋ダンパー線、曲率、ビネット、オーバースキャン</span></li>

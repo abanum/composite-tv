@@ -159,7 +159,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 |---|---|---|
 | ゴースト強度 / 遅延 | 検波前 | 遅れて届いた反射波による多重像。Y/C 分離前なので色にじみを伴う。遅延を**負**にすると先行ゴースト |
 | 干渉ビート 強度 / 周波数 | エンコード | 流れる斜め縞。3.58MHz 付近では虹色のクロスカラー |
-| 垂直ロール速度 / 帰線帯 | 表示 | 画面が上下に流れ、継ぎ目に黒い帯（V-Hold 不良） |
+| V-HOLD / H-HOLD（RF/検波の節） | 受像機 | 垂直・水平発振器のデチューン。回して外れると縦ロール（継ぎ目に黒帯）／斜めの引き裂き。信号から同期を追う物理モデル |
 | 水平同期ジッタ | 信号 | ライン全体（同期パルスごと）が時間軸上で揺れる。行ごとに横へ揺れ、左端がギザギザに |
 | フェージング | 検波 | 電波の浮き沈み（Eスポ/トロポ）。砂が呼吸し、色が点滅し、水平が泳ぐ——弱電界の挙動が周期的に現れる |
 | 一時発動の長さ | — | 発動が収まるまでの秒数 |
@@ -183,7 +183,7 @@ OBS ではシーン自体もソースなので、**シーンにこのフィル�
 
 - **古いアンテナ・弱電界**: ゴースト 0.25 / 遅延 30 / 水平ジッタ 0.15 / 電界強度 0.6
 - **VHS 再生**: ヘッドスイッチング 0.5 / ドロップアウト 0.3 / フラッギング 0.4
-- **チャンネル調整中**: 垂直ロール 0.3 / 帰線帯 12 / 干渉ビート 0.15
+- **チャンネル調整中**: V-HOLD 0.45 / 干渉ビート 0.15
 
 ### 消磁（デガウス）
 
@@ -365,7 +365,7 @@ power can be driven live for a whole scene.
 Switch on the **Glitches** group for reception faults injected at the physically correct
 stage: multipath **ghosting** (before Y/C separation, so it smears colour; a negative delay
 gives a leading ghost), an **interference beat** (herringbone plus rainbow cross-colour),
-**vertical roll** with a blanking bar, **horizontal sync jitter**, **flagging** (top-of-picture
+**horizontal sync jitter**, **flagging** (top-of-picture
 bend), VHS **head-switching** tear and tape **dropout** streaks. The dock's **Reception** and **Playback** buttons
 and the *Composite TV: trigger glitch* hotkey fire a momentary burst that settles on its own.
 

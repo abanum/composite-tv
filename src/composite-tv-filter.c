@@ -153,7 +153,6 @@ struct composite_tv {
 	/* glitches */
 	float ghost_gain;
 	float ghost_delay;
-	float v_roll_speed;
 	float h_jitter;
 	float flagging;
 	float flag_wave; /* tension wobble: the bend waves ("flagwaving") */
@@ -170,7 +169,6 @@ struct composite_tv {
 
 	/* glitch animation state. The two halves of the fault set run their own
 	 * envelopes so a reception burst and a playback burst can overlap. */
-	double v_roll_pos;
 	double damage_pos; /* drift of the crease, 0..1 of picture height */
 	double beat_phase;
 	double flag_phase1; /* the two slow oscillators of the tension wobble */
@@ -523,7 +521,20 @@ static void ntsc_update(void *data, obs_data_t *s)
 	const bool pb = obs_data_get_bool(s, "playback_enable");
 	f->ghost_gain = rx ? (float)obs_data_get_double(s, "ghost_gain") : 0.0f;
 	f->ghost_delay = rx ? (float)obs_data_get_double(s, "ghost_delay") : 0.0f;
-	f->v_roll_speed = rx ? (float)obs_data_get_double(s, "v_roll_speed") : 0.0f;
+	/* The manual vertical roll retired when V-HOLD became physical: a roll
+	 * is nothing but a detuned field oscillator. Scenes that still carry a
+	 * roll speed get it written into V-HOLD once (screens/s -> rows/field ->
+	 * knob), and the old key is dropped so it cannot come back. */
+	if (obs_data_has_user_value(s, "v_roll_speed")) {
+		const double roll = obs_data_get_double(s, "v_roll_speed");
+		if (roll != 0.0 && !obs_data_has_user_value(s, "v_hold")) {
+			const double detune = roll * SIG_H / 59.94; /* rows per field */
+			const double knob = sqrt(fabs(detune) / 24.0);
+			obs_data_set_double(s, "v_hold", roll < 0.0 ? -knob : knob);
+			f->v_hold = (float)(roll < 0.0 ? -knob : knob);
+		}
+		obs_data_erase(s, "v_roll_speed");
+	}
 	f->h_jitter = rx ? (float)obs_data_get_double(s, "h_jitter") : 0.0f;
 	f->fading = rx ? (float)obs_data_get_double(s, "fading") : 0.0f;
 	f->beat_gain = rx ? (float)obs_data_get_double(s, "beat_gain") : 0.0f;
@@ -886,6 +897,12 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 		fade_dip = 0.5f + 0.5f * fw; /* 0 = crest, 1 = deepest */
 		fs_eff *= clampf(1.0f - f->fading * fade_dip, 0.0f, 1.0f);
 	}
+	/* A reception burst is the signal going away - the aerial swings, a
+	 * truck passes, the relay hiccups. Collapse the field strength and let
+	 * the receiver do the rest on its own: snow, colour killed, horizontal
+	 * swimming into a tear, vertical hold drifting off and rolling. Nothing
+	 * is injected by hand any more; it all falls out of the tracking. */
+	fs_eff *= 1.0f - 0.92f * f->burst_rx;
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_jitter", f->agc_jitter);
@@ -990,8 +1007,10 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * of its own. The wander is the reflection point moving. */
 	float gg = f->ghost_gain;
 	float gd = f->ghost_delay;
-	if (f->fading > 0.0f) {
-		float two_ray = f->fading * smoothstepf(0.55f, 0.95f, fade_dip);
+	float two_ray = f->fading * smoothstepf(0.55f, 0.95f, fade_dip);
+	/* A reception burst is a trough too, with the same multipath in it. */
+	two_ray = fmaxf(two_ray, smoothstepf(0.30f, 0.90f, brx));
+	if (two_ray > 0.0f) {
 		gg += 0.35f * two_ray;
 		if (f->ghost_delay == 0.0f)
 			gd = 16.0f + 7.0f * (float)sin(f->fade_phase5);
@@ -1001,9 +1020,8 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "beat_gain", f->beat_gain);
 	set_f(e, "beat_norm", f->beat_norm);
 	set_f(e, "beat_phase", (float)f->beat_phase);
-	set_f(e, "v_roll", (float)f->v_roll_pos);
 	set_f(e, "vblank_lines", bar_lines(f));
-	set_f(e, "h_jitter", clampf(f->h_jitter + brx * 0.8f, 0.0f, 2.0f));
+	set_f(e, "h_jitter", f->h_jitter);
 	/* Flagging can bend either way - the sign of the tension error decides -
 	 * and a wandering tension makes the bend wave. The wobble is two slow
 	 * incommensurate sines, so the flag never settles into a loop, and the
@@ -1192,28 +1210,6 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 		f->burst_pb -= dt / sweep;
 		if (f->burst_pb < 0.0f)
 			f->burst_pb = 0.0f;
-	}
-	/* The burst kicks the vertical hold hard so the picture visibly tumbles
-	 * (several screens over the burst) before it re-locks. */
-	/* One roll cycle is the active picture plus the blanking interval, which
-	 * is what the shader wraps over - the two have to agree or the wrap would
-	 * jump the picture. */
-	const double frame_lines = (double)f->scan_lines;
-	const double cycle = frame_lines + (double)bar_lines(f);
-	float roll_speed = f->v_roll_speed + f->burst_rx * 6.0f;
-	if (roll_speed != 0.0f) {
-		f->v_roll_pos = fmod(f->v_roll_pos + (double)roll_speed * cycle * dt, cycle);
-	} else if (f->v_roll_pos != 0.0) {
-		/* Vertical hold re-locks: slide back to the framed position by the
-		 * shortest way round, then snap once we are within half a line. */
-		const double half = cycle * 0.5;
-		double p = fmod(f->v_roll_pos, cycle);
-		if (p > half)
-			p -= cycle;
-		else if (p < -half)
-			p += cycle;
-		p *= exp(-(double)dt / 0.30); /* ~300 ms settle, visible glide back */
-		f->v_roll_pos = (fabs(p) < 0.5) ? 0.0 : p;
 	}
 	/* A crease is at a fixed place on the tape, not on the screen. Whether it
 	 * lands on the same lines twice depends on the tape keeping step with the
@@ -1487,7 +1483,6 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_SWEEP_SEC 2.0
 #define DEF_GHOST_GAIN 0.0
 #define DEF_GHOST_DELAY 24.0
-#define DEF_V_ROLL_SPEED 0.0
 #define DEF_H_JITTER 0.0
 #define DEF_FADING 0.0
 #define DEF_FLAGGING 0.0
@@ -1631,8 +1626,6 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(g, "ghost_gain", obs_module_text("CompositeTV.GhostGain"), 0.0, 0.8, 0.01, DEF_GHOST_GAIN);
 	ctv_add_float_slider(g, "ghost_delay", obs_module_text("CompositeTV.GhostDelay"), -60.0, 120.0, 1.0,
 			     DEF_GHOST_DELAY);
-	ctv_add_float_slider(g, "v_roll_speed", obs_module_text("CompositeTV.VRollSpeed"), -2.0, 2.0, 0.01,
-			     DEF_V_ROLL_SPEED);
 	ctv_add_float_slider(g, "h_jitter", obs_module_text("CompositeTV.HJitter"), 0.0, 1.0, 0.01, DEF_H_JITTER);
 	obs_property_t *fd =
 		ctv_add_float_slider(g, "fading", obs_module_text("CompositeTV.Fading"), 0.0, 1.0, 0.01, DEF_FADING);
@@ -1758,7 +1751,6 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "peaking", DEF_PEAKING);
 	obs_data_set_default_double(s, "ghost_gain", DEF_GHOST_GAIN);
 	obs_data_set_default_double(s, "ghost_delay", DEF_GHOST_DELAY);
-	obs_data_set_default_double(s, "v_roll_speed", DEF_V_ROLL_SPEED);
 	obs_data_set_default_double(s, "h_jitter", DEF_H_JITTER);
 	obs_data_set_default_double(s, "fading", DEF_FADING);
 	obs_data_set_default_double(s, "flagging", DEF_FLAGGING);

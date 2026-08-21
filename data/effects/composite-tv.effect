@@ -129,7 +129,6 @@ uniform float ghost_delay;        // ghost delay in samples (negative = leading)
 uniform float beat_gain;          // interfering carrier amplitude
 uniform float beat_norm;          // interfering carrier frequency / fs
 uniform float beat_phase;         // interfering carrier phase [rad]
-uniform float v_roll;             // vertical roll offset [lines]
 uniform float vblank_lines;       // vertical blanking depth [lines]
 uniform float h_jitter;           // per-line horizontal jitter
 uniform float flagging;           // top-of-picture horizontal bend
@@ -986,7 +985,10 @@ float4 PSVFlywheel(VertData v) : TARGET
 	}
 	float qv = saturate((cs - ce - 0.25) * 3.0);
 
-	vp += vafc_freerun + (1.0 - qv) * afc_drift * 0.3;
+	// With the serrations drowned the trigger has nothing and the field
+	// oscillator wanders on its own error until it walks out of the gate -
+	// then the residual sweeps it round: the roll of a set deep in snow.
+	vp += vafc_freerun + (1.0 - qv) * afc_drift * 1.5;
 	if (abs(vp) < V_GATE)
 		vp -= VAFC_GAIN * qv * vp;
 	else
@@ -1330,13 +1332,14 @@ float4 PSDisplay(VertData v) : TARGET
 	float cycle = active_lines + vblank_lines;
 	// Vertical hold: the field oscillator's phase displaces the whole
 	// raster, and once V-HOLD is past capture the phase accumulates -
-	// that IS the roll, riding the same seam the manual roll uses. Phase
+	// that IS the roll, and the only one there is: a detuned oscillator,
+	// a drowned serration block, nothing else moves the frame. Phase
 	// lives in field rows; scan-out wants drawn lines.
 	float vph = 0.0;
 	float4 vf = vfly_tex.Sample(pointClamp, float2(0.5, 0.5));
 	if (abs(vf.a - 0.618) < 0.01)
 		vph = (vf.r - 0.5) * VPHASE_SPAN / field_row_step;
-	float linePos = fmod(uv.y * active_lines + v_roll + vph + cycle * 8.0, cycle);
+	float linePos = fmod(uv.y * active_lines + vph + cycle * 8.0, cycle);
 	float inBar = (linePos >= active_lines) ? 1.0 : 0.0;
 	float lineF = linePos - 0.5;
 
