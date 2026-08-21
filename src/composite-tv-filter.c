@@ -121,6 +121,7 @@ struct composite_tv {
 	float agc_level;
 	float agc_jitter;
 	float h_hold; /* how far the H-HOLD knob sits off its sweet spot */
+	float v_hold; /* how far the V-HOLD knob sits off its sweet spot */
 	float if_cutoff;
 	float luma_cutoff;
 	float chroma_gain;
@@ -224,6 +225,8 @@ struct composite_tv {
 	gs_texrender_t *track;
 	gs_texrender_t *flywheel[2]; /* ping-pong: the oscillator state carries across fields */
 	int fly_idx;
+	gs_texrender_t *vfly[2]; /* ping-pong: the field oscillator, one texel of state */
+	int vfly_idx;
 
 	/* debug waveform overlay */
 	bool scope_on;
@@ -470,6 +473,7 @@ static void ntsc_update(void *data, obs_data_t *s)
 	f->agc_level = (float)obs_data_get_double(s, "agc_level");
 	f->agc_jitter = (float)obs_data_get_double(s, "agc_jitter");
 	f->h_hold = (float)obs_data_get_double(s, "h_hold");
+	f->v_hold = (float)obs_data_get_double(s, "v_hold");
 	f->if_cutoff = (float)(obs_data_get_double(s, "if_bandwidth") * 0.5 * MHZ_TO_NORM);
 	f->luma_cutoff = (float)(obs_data_get_double(s, "luma_bandwidth") * MHZ_TO_NORM);
 	/* Colour killer. Scenes saved before it became a mode carry the old
@@ -752,6 +756,8 @@ static void ntsc_destroy(void *data)
 	free_texrender(&f->track);
 	free_texrender(&f->flywheel[0]);
 	free_texrender(&f->flywheel[1]);
+	free_texrender(&f->vfly[0]);
+	free_texrender(&f->vfly[1]);
 	if (f->audio_tex)
 		gs_texture_destroy(f->audio_tex);
 	obs_leave_graphics();
@@ -891,6 +897,11 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	const float hh = f->h_hold;
 	set_f(e, "afc_freerun", 16.0f * hh * hh);
 	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, hh) * (1.0f - smoothstepf(0.36f, 0.55f, hh)));
+	/* V-HOLD: the same story vertically. The trigger corrects 0.4 * 8 =
+	 * 3.2 rows per field, so hold is lost near knob 0.37; past it the
+	 * frame rolls, faster the further the detune. */
+	const float vh = f->v_hold;
+	set_f(e, "vafc_freerun", 24.0f * vh * vh);
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
@@ -1323,6 +1334,17 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
 
+	/* The vertical oscillator: a single texel of state, judged from the
+	 * integrator charge the Track pass measured on the VBI rows. Same
+	 * ping-pong continuity rules as the line oscillator above. */
+	ensure_tr(&f->vfly[0], GS_RGBA32F);
+	ensure_tr(&f->vfly[1], GS_RGBA32F);
+	gs_texture_t *vfl_prev = gs_texrender_get_texture(f->vfly[1 - f->vfly_idx]);
+	set_tex(e, "vfly_prev", vfl_prev ? vfl_prev : input_tex);
+	gs_texture_t *vfl = trk ? run_pass(f, e, f->vfly[f->vfly_idx], 1, 1, "VFlywheel", trk, cx, cy) : NULL;
+	if (vfl)
+		f->vfly_idx ^= 1;
+
 	gs_texture_t *field_cur =
 		run_pass(f, e, f->field[f->field_idx], FIELD_W, FIELD_H, "Decode", det, cx, cy);
 
@@ -1348,6 +1370,7 @@ static void ntsc_render(void *data, gs_effect_t *unused)
 	 * a line to the right. */
 	set_tex(e, "track_tex", trk ? trk : input_tex);
 	set_tex(e, "flywheel_tex", fly ? fly : input_tex);
+	set_tex(e, "vfly_tex", vfl ? vfl : input_tex);
 	gs_texture_t *display_cur =
 		run_pass(f, e, f->display[f->display_idx], cx, cy, "Display", field_cur, cx, cy);
 
@@ -1416,6 +1439,7 @@ static void ntsc_props_destroyed(void *param)
 #define DEF_AGC_LEVEL 0.62
 #define DEF_AGC_JITTER 0.06
 #define DEF_H_HOLD 0.0
+#define DEF_V_HOLD 0.0
 #define DEF_IF_BANDWIDTH 5.0
 #define DEF_LUMA_BANDWIDTH 4.2
 #define DEF_PEAKING 0.0
@@ -1520,6 +1544,9 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	obs_property_t *hh =
 		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), 0.0, 1.0, 0.01, DEF_H_HOLD);
 	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
+	obs_property_t *vh =
+		ctv_add_float_slider(p, "v_hold", obs_module_text("CompositeTV.VHold"), 0.0, 1.0, 0.01, DEF_V_HOLD);
+	ctv_add_tip_note(vh, obs_module_text("CompositeTV.VHold.Tip"));
 	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
 			     DEF_IF_BANDWIDTH);
 
@@ -1683,6 +1710,7 @@ static void ntsc_defaults(obs_data_t *s)
 	obs_data_set_default_double(s, "agc_level", DEF_AGC_LEVEL);
 	obs_data_set_default_double(s, "agc_jitter", DEF_AGC_JITTER);
 	obs_data_set_default_double(s, "h_hold", DEF_H_HOLD);
+	obs_data_set_default_double(s, "v_hold", DEF_V_HOLD);
 	obs_data_set_default_double(s, "if_bandwidth", DEF_IF_BANDWIDTH);
 	obs_data_set_default_double(s, "luma_bandwidth", DEF_LUMA_BANDWIDTH);
 	obs_data_set_default_double(s, "chroma_gain", DEF_CHROMA_GAIN);

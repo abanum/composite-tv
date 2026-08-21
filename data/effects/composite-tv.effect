@@ -29,6 +29,9 @@ uniform float killer_auto;        // 1: colour killer decides from the measured 
 uniform float afc_drift;          // free-run frequency error of the line oscillator [smp/line]
 uniform float afc_slop;           // marginal-stability drive for the AFC's limit cycle
 uniform float afc_freerun;        // H-HOLD detune of the line oscillator [smp/line]
+uniform texture2d vfly_tex;       // Display: the field oscillator's phase (VFlywheel pass)
+uniform texture2d vfly_prev;      // VFlywheel: last field's state, for continuity
+uniform float vafc_freerun;       // V-HOLD detune of the field oscillator [rows/field]
 
 // Debug waveform overlay
 uniform float scope_on;
@@ -211,6 +214,13 @@ uniform float flash;              // discharge flash amount
 #define PHASE_SPAN 1024.0         /* oscillator phase storage scale: must hold a half line */
 #define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
 #define HOLD_RESIDUAL 1.2         /* natural free-run error, samples/line, felt only off lock */
+
+/* Vertical hold (VFlywheel pass): the field oscillator, one state for the
+ * whole field, phase in field rows, stored as value / VPHASE_SPAN + 0.5. */
+#define VPHASE_SPAN 512.0         /* vertical phase storage scale: holds a half field */
+#define VAFC_GAIN 0.4             /* vertical pull per field once the integrator fires */
+#define V_GATE 8.0                /* rows around coincidence the trigger accepts */
+#define V_RESIDUAL 2.0            /* natural field-rate error, rows/field, felt off lock */
 
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
@@ -776,9 +786,19 @@ float4 PSTrack(VertData v) : TARGET
 
 	// The nine vertical-pulse rows keep their edges at the nominal spot by
 	// construction - that is exactly what equalizing pulses are for - so the
-	// separator reports nominal instead of being confused by their widths.
-	if (row < 9)
-		return float4(0.5, 0.5, 0.0, 1.0);
+	// horizontal separator reports nominal here. What these rows DO carry
+	// is the vertical separator's raw material: an integrating separator
+	// distinguishes the field pulses by how much of the line sits at sync
+	// level - the broad serrations fill it, the narrow equalizers do not,
+	// and snow drowns the difference. Measure the charge into B; the
+	// VFlywheel pass does the judging.
+	if (row < 9) {
+		float low = 0.0;
+		for (int m = 0; m < SIG_W; ++m)
+			if (compositeAt(m, row) < -0.25)
+				low += 1.0;
+		return float4(0.5, 0.5, low / (float)SIG_W, 1.0);
+	}
 
 	// Sync separator, matched-filter style: slide a window the width of the
 	// pulse across the gate and take the offset where it sums lowest. This
@@ -934,6 +954,46 @@ float4 PSFlywheel(VertData v) : TARGET
 
 	return float4(clamp(h / PHASE_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
 		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 0.618);
+}
+
+// The vertical oscillator: one state for the whole field, same story as the
+// line oscillator one floor up. The integrator charge measured by the Track
+// pass says whether the serration block is really there; the V-HOLD knob
+// detunes the free run. Small detune parks the picture high or low (steady
+// error = detune / gain), past the trigger's capture the frame rolls -
+// faster the further the knob - and a stranded phase sweeps back to
+// coincidence on the residual error, pausing to grab at every pass. When
+// snow drowns the serrations the trust collapses and the picture starts to
+// breathe and roll on its own, which is exactly what a set in a fringe area
+// does first.
+float4 PSVFlywheel(VertData v) : TARGET
+{
+	float4 pv = vfly_prev.Sample(pointClamp, float2(0.5, 0.5));
+	float vp = 0.0;
+	if (abs(pv.a - 0.618) < 0.01)
+		vp = clamp((pv.r - 0.5) * VPHASE_SPAN, -0.5 * (float)SIG_H, 0.5 * (float)SIG_H);
+
+	// Serration rows minus equalizing rows: ~0.8 apart on a clean signal,
+	// pulled toward each other by snow until the trigger has nothing.
+	float cs = 0.0;
+	float ce = 0.0;
+	for (int r = 0; r < 9; ++r) {
+		float c = image.Sample(pointClamp, float2(((float)r + 0.5) / (float)SIG_H, 0.5)).b;
+		if (r >= 3 && r < 6)
+			cs += c / 3.0;
+		else
+			ce += c / 6.0;
+	}
+	float qv = saturate((cs - ce - 0.25) * 3.0);
+
+	vp += vafc_freerun + (1.0 - qv) * afc_drift * 0.3;
+	if (abs(vp) < V_GATE)
+		vp -= VAFC_GAIN * qv * vp;
+	else
+		vp += V_RESIDUAL;
+	vp -= (float)SIG_H * floor(vp / (float)SIG_H + 0.5);
+
+	return float4(clamp(vp / VPHASE_SPAN + 0.5, 0.0, 1.0), 0.5, qv, 0.618);
 }
 
 //============================================================================
@@ -1268,7 +1328,15 @@ float4 PSDisplay(VertData v) : TARGET
 	// first pushes the topmost half line past the wrap, which used to leave a
 	// sliver of the bottom line showing above the bar.
 	float cycle = active_lines + vblank_lines;
-	float linePos = fmod(uv.y * active_lines + v_roll + cycle * 8.0, cycle);
+	// Vertical hold: the field oscillator's phase displaces the whole
+	// raster, and once V-HOLD is past capture the phase accumulates -
+	// that IS the roll, riding the same seam the manual roll uses. Phase
+	// lives in field rows; scan-out wants drawn lines.
+	float vph = 0.0;
+	float4 vf = vfly_tex.Sample(pointClamp, float2(0.5, 0.5));
+	if (abs(vf.a - 0.618) < 0.01)
+		vph = (vf.r - 0.5) * VPHASE_SPAN / field_row_step;
+	float linePos = fmod(uv.y * active_lines + v_roll + vph + cycle * 8.0, cycle);
 	float inBar = (linePos >= active_lines) ? 1.0 : 0.0;
 	float lineF = linePos - 0.5;
 
@@ -1547,5 +1615,14 @@ technique Flywheel
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSFlywheel(v);
+	}
+}
+
+technique VFlywheel
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSVFlywheel(v);
 	}
 }
