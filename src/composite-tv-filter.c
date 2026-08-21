@@ -893,15 +893,18 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	 * correct at most 0.08 * 30 = 2.4 samples per line, so hold is lost
 	 * near knob 0.39. Below that, a marginal-stability band drives the
 	 * serpentine limit cycle; above it the free-running phase winds the
-	 * raster round the line - about 4.5 diagonal copies at full detune. */
+	 * raster round the line - about 4.5 diagonal copies at full detune.
+	 * Both knobs are bipolar, centre = lock: the sign is the direction
+	 * of the detune, which way the copies lean and the frame rolls. */
 	const float hh = f->h_hold;
-	set_f(e, "afc_freerun", 16.0f * hh * hh);
-	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, hh) * (1.0f - smoothstepf(0.36f, 0.55f, hh)));
+	const float ha = fabsf(hh);
+	set_f(e, "afc_freerun", 16.0f * hh * ha);
+	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, ha) * (1.0f - smoothstepf(0.36f, 0.55f, ha)));
 	/* V-HOLD: the same story vertically. The trigger corrects 0.4 * 8 =
 	 * 3.2 rows per field, so hold is lost near knob 0.37; past it the
 	 * frame rolls, faster the further the detune. */
 	const float vh = f->v_hold;
-	set_f(e, "vafc_freerun", 24.0f * vh * vh);
+	set_f(e, "vafc_freerun", 24.0f * vh * fabsf(vh));
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);
@@ -1545,10 +1548,10 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "agc_jitter", obs_module_text("CompositeTV.AgcJitter"), 0.0, 0.40, 0.01,
 			     DEF_AGC_JITTER);
 	obs_property_t *hh =
-		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), 0.0, 1.0, 0.01, DEF_H_HOLD);
+		ctv_add_float_slider(p, "h_hold", obs_module_text("CompositeTV.HHold"), -1.0, 1.0, 0.01, DEF_H_HOLD);
 	ctv_add_tip_note(hh, obs_module_text("CompositeTV.HHold.Tip"));
 	obs_property_t *vh =
-		ctv_add_float_slider(p, "v_hold", obs_module_text("CompositeTV.VHold"), 0.0, 1.0, 0.01, DEF_V_HOLD);
+		ctv_add_float_slider(p, "v_hold", obs_module_text("CompositeTV.VHold"), -1.0, 1.0, 0.01, DEF_V_HOLD);
 	ctv_add_tip_note(vh, obs_module_text("CompositeTV.VHold.Tip"));
 	ctv_add_float_slider(p, "if_bandwidth", obs_module_text("CompositeTV.IfBandwidth"), 2.0, 7.0, 0.1,
 			     DEF_IF_BANDWIDTH);
