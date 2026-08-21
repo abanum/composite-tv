@@ -164,10 +164,10 @@ struct composite_tv {
 	float damage_speed;
 	float beat_gain;
 	float beat_norm;
-	float burst_len; /* reception burst duration */
-	bool glitch_on;  /* the reception group's checkbox */
+	float burst_len;  /* reception burst duration */
+	bool glitch_on;   /* the reception group's checkbox */
 	bool playback_on; /* the playback group's checkbox */
-	float glitch_fs; /* receiver state the group imposes while active: */
+	float glitch_fs;  /* receiver state the group imposes while active: */
 	float glitch_h_hold;
 	float glitch_v_hold;
 	float sweep_sec; /* playback burst: seconds for the crease to cross once */
