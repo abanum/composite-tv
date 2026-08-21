@@ -1460,11 +1460,15 @@ float4 PSDisplay(VertData v) : TARGET
 			// The trace is drawn between this column's sample and the
 			// next one's, so a steep edge joins up instead of leaving
 			// the line in pieces. The x axis is the whole 910-sample
-			// line: porch, sync and burst included.
+			// line: porch, sync and burst included - compressed a few
+			// percent off the panel edges, because the line ends exactly
+			// where active video does and a trace touching the border is
+			// unreadable right where the picture's right edge lives.
 			float row = (floor(scope_line) + 0.5) / (float)SIG_H;
-			float dx = 1.0 / max(output_size.x, 1.0);
-			float s0 = (scope_src.Sample(pointClamp, float2(v.uv.x, row)).r - STORE_BIAS) / STORE_SCALE;
-			float s1 = (scope_src.Sample(pointClamp, float2(v.uv.x + dx, row)).r - STORE_BIAS) / STORE_SCALE;
+			float tx = (v.uv.x - 0.03) / 0.94;
+			float dx = 1.0 / (0.94 * max(output_size.x, 1.0));
+			float s0 = (scope_src.Sample(pointClamp, float2(tx, row)).r - STORE_BIAS) / STORE_SCALE;
+			float s1 = (scope_src.Sample(pointClamp, float2(tx + dx, row)).r - STORE_BIAS) / STORE_SCALE;
 
 			// Video runs 0 (black) to 1 (white) with sync down at -0.4;
 			// the margin leaves the graticule lines clear of the edges.
@@ -1475,7 +1479,7 @@ float4 PSDisplay(VertData v) : TARGET
 			outCol = lerp(outCol, float3(0.0, 0.02, 0.03), 0.82);
 			if (abs(val) < w || abs(val - 1.0) < w || abs(val - SYNC_LEVEL) < w)
 				outCol = lerp(outCol, float3(0.45, 0.45, 0.45), 0.85);
-			if (val > min(s0, s1) - w && val < max(s0, s1) + w)
+			if (tx >= 0.0 && tx <= 1.0 && val > min(s0, s1) - w && val < max(s0, s1) + w)
 				outCol = float3(0.25, 1.0, 0.35);
 
 			// Receiver-tracking traces, field rows mapped across the panel:
@@ -1483,17 +1487,19 @@ float4 PSDisplay(VertData v) : TARGET
 			// each way full scale), cyan = the separator's per-line
 			// trust. What the tube does with timing is exactly the amber
 			// line.
-			float2 fuv = float2(v.uv.x, 0.5);
+			float2 fuv = float2(tx, 0.5);
 			float4 fw2 = flywheel_tex.Sample(pointClamp, fuv);
 			float4 tk2 = track_tex.Sample(pointClamp, fuv);
 			float hshift = 0.0; /* fraction of a full line, -0.5..0.5 */
 			if (abs(fw2.a - 0.618) < 0.01)
 				hshift = ((fw2.r - 0.5) * PHASE_SPAN + (fw2.g - 0.5) * TRACK_SPAN) /
 					 (float)SIG_W;
-			if (abs(val - (0.35 + hshift)) < w * 1.2)
-				outCol = float3(1.0, 0.72, 0.2);
-			if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
-				outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
+			if (tx >= 0.0 && tx <= 1.0) {
+				if (abs(val - (0.35 + hshift)) < w * 1.2)
+					outCol = float3(1.0, 0.72, 0.2);
+				if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
+					outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
+			}
 		}
 	}
 
