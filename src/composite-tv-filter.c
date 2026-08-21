@@ -1746,6 +1746,34 @@ static obs_properties_t *ntsc_get_properties(void *data)
 	ctv_add_float_slider(p, "scope_line", obs_module_text("CompositeTV.ScopeLine"), 0.0, (double)(ACTIVE_LINES - 1),
 			     1.0, DEF_SCOPE_LINE);
 
+	/* Explanations for the controls whose effect is not obvious from the
+	 * label, attached in one place so the list stays easy to audit. The
+	 * text lives in the locale files under "<label key>.Tip". */
+	static const struct {
+		const char *name;
+		const char *key;
+	} tips[] = {
+		{"field_strength", "CompositeTV.FieldStrength.Tip"},
+		{"agc_level", "CompositeTV.AgcLevel.Tip"},
+		{"if_bandwidth", "CompositeTV.IfBandwidth.Tip"},
+		{"chroma_drift", "CompositeTV.ChromaDrift.Tip"},
+		{"glitch_h_hold", "CompositeTV.GlitchHHold.Tip"},
+		{"glitch_v_hold", "CompositeTV.GlitchVHold.Tip"},
+		{"ghost_gain", "CompositeTV.GhostGain.Tip"},
+		{"ghost_delay", "CompositeTV.GhostDelay.Tip"},
+		{"h_jitter", "CompositeTV.HJitter.Tip"},
+		{"beat_gain", "CompositeTV.BeatGain.Tip"},
+		{"burst_len", "CompositeTV.BurstLen.Tip"},
+		{"flagging", "CompositeTV.Flagging.Tip"},
+		{"flag_wave", "CompositeTV.FlagWave.Tip"},
+		{"head_switch", "CompositeTV.HeadSwitch.Tip"},
+		{"dropout", "CompositeTV.Dropout.Tip"},
+		{"tape_damage", "CompositeTV.TapeDamage.Tip"},
+		{"tape_damage_drift", "CompositeTV.TapeDamageDrift.Tip"},
+	};
+	for (size_t i = 0; i < sizeof(tips) / sizeof(tips[0]); i++)
+		ctv_add_tip_note(obs_properties_get(p, tips[i].name), obs_module_text(tips[i].key));
+
 	return p;
 }
 
