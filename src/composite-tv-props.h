@@ -73,7 +73,7 @@ static inline void ctv_add_tip_note(obs_property_t *prop, const char *note)
 	if (!prop || !note)
 		return;
 	const char *have = obs_property_long_description(prop);
-	char tip[512];
+	char tip[2048]; /* UTF-8 Japanese runs three bytes a glyph - leave room */
 	if (have && *have)
 		snprintf(tip, sizeof(tip), "%s\n%s", have, note);
 	else

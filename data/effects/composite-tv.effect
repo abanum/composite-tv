@@ -67,7 +67,9 @@ uniform int   field_seed;         // per-field RNG seed
 uniform float if_cutoff;          // (IF bandwidth / 2) / fs
 uniform float field_strength;     // 0 (snow) .. 1 (clean)
 uniform float noise_floor;        // residual grain at full field strength
-uniform float agc_jitter;         // AGC hunting
+uniform float agc_hunt;           // AGC loop pushed toward instability (limit-cycle amplitude)
+uniform texture2d agc_tex;        // Decode/Display: per-row AGC gain (Agc pass)
+uniform texture2d agc_prev;       // Agc: last field's state, for continuity
 uniform float snow_level;         // detection level for the snow limit (agcLevel)
 
 // Decode
@@ -224,6 +226,14 @@ uniform float flash;              // discharge flash amount
 #define V_GATE 16.0               /* the ramp's final stretch in which a pulse fires it */
 #define V_FREERUN -6.0            /* designed-in free run, rows/field: slow, on purpose */
 
+/* Keyed AGC (Agc pass): per-row gain state, stored as gain / 4 in R and
+ * gain velocity / 64 + 0.5 in G. The loop keys on the receiver's own line
+ * timing, measures sync tip against back porch, and holds that at the
+ * nominal 0.4 with a second-order loop of AGC_HZ bandwidth. */
+#define AGC_MIN 0.4
+#define AGC_MAX 2.5
+#define AGC_HZ 8.0
+
 /* How much of the peaking resonance survives each sample. Settled by eye
  * against real footage: at 0.9 the tail is still worth carrying at the far
  * end of the tap range, so it runs the whole way out. */
@@ -307,6 +317,18 @@ float compAt(int n, int ln)
 float compositeAt(int n, int ln)
 {
 	return (compAt(n, ln) - STORE_BIAS) / STORE_SCALE;
+}
+
+// The same read without a gradient: SampleLevel lets a loop of varying trip
+// count around it stay a loop. Sample() inside such a loop makes the HLSL
+// compiler try to unroll it, and a 263 x 14 nest (the Agc pass) does not
+// unroll - the whole effect then fails to load.
+float compositeAtL(int n, int ln)
+{
+	int nx = clamp(n, 0, SIG_W - 1);
+	int ny = clamp(ln, 0, SIG_H - 1);
+	float2 uv = float2(((float)nx + 0.5) / (float)SIG_W, ((float)ny + 0.5) / (float)SIG_H);
+	return (image.SampleLevel(pointClamp, uv, 0.0).r - STORE_BIAS) / STORE_SCALE;
 }
 
 // Sync structure of the full-line raster, in video units (blanking = 0, sync
@@ -758,8 +780,7 @@ float4 PSDetect(VertData v) : TARGET
 	float env = sqrt(re * re + im * im);
 
 	float videoDetected = (env - field_strength) / max(field_strength, 0.15);
-	float wobble = 1.0 + agc_jitter * (hash13(float3((float)field_seed, (float)ln, 7.0)) - 0.5);
-	float snowDetected = 1.0 - env * (snow_level / 1.2533141) * wobble;
+	float snowDetected = 1.0 - env * (snow_level / 1.2533141);
 	float detected = lerp(snowDetected, videoDetected, det_blend);
 
 	// Stored, not clamped to video levels: sync sits at -0.4 and has to
@@ -1006,6 +1027,63 @@ float4 PSVFlywheel(VertData v) : TARGET
 	return float4(clamp(vp / VPHASE_SPAN + 0.5, 0.0, 1.0), 0.5, qv, 0.618);
 }
 
+// Keyed automatic gain control, the receiver's brightness side. The key
+// pulses come off its own line oscillator (the Flywheel phase), the sync
+// tip is measured against the back porch, and a second-order loop drives
+// the gain to hold that difference at nominal. Nothing is told the field
+// strength: a dropout takes the key's reference away and the gain climbs
+// until sync returns (the bright streak after a long dropout), a fade pulls
+// the measured sync down into the snow and the gain winds up, a glitch
+// ending lets it overshoot and ring back, and a lost horizontal lock puts
+// the key on picture content so the brightness flutters. The hunting knob
+// is the loop's own instability: inside the target amplitude the damping
+// is negative, outside positive, so it settles into a sustained pumping
+// (van der Pol again) at AGC_HZ - a set whose AGC filter has dried out.
+float4 PSAgc(VertData v) : TARGET
+{
+	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
+
+	float2 last = float2(((float)(SIG_H - 1) + 0.5) / (float)SIG_H, 0.5);
+	float4 pv = agc_prev.Sample(pointClamp, last);
+	float g = 1.0;
+	float gv = 0.0;
+	if (abs(pv.a - 0.618) < 0.01) {
+		g = clamp(pv.r * 4.0, AGC_MIN, AGC_MAX);
+		gv = clamp((pv.g - 0.5) * 64.0, -32.0, 32.0);
+	}
+
+	float dt = 1.0 / ((float)SIG_H * 59.94);
+	float w = 2.0 * PI * AGC_HZ;
+	float L = agc_hunt * 0.35; /* limit-cycle amplitude, gain units */
+	if (L > 0.0 && abs(g - 1.0) + abs(gv) / w < 1.0e-3)
+		gv = 0.05 * L * w;
+
+	float ain = 0.4;
+	for (int r = 0; r <= row; ++r) {
+		float4 fw = flywheel_tex.SampleLevel(pointClamp, float2(((float)r + 0.5) / (float)SIG_H, 0.5), 0.0);
+		float hs = (abs(fw.a - 0.618) < 0.01) ? (fw.r - 0.5) * PHASE_SPAN : 0.0;
+		int k = (int)floor(hs + 0.5);
+		float tip = 0.0;
+		float por = 0.0;
+		for (int m = 0; m < 8; ++m)
+			tip += compositeAtL(SYNC_EDGE + 8 + m * 6 + k, r);
+		for (int m2 = 0; m2 < 6; ++m2)
+			por += compositeAtL(BURST_END + 1 + m2 * 2 + k, r);
+		ain = por / 6.0 - tip / 8.0;
+		// No sync under the key: the reference is gone and the gain climbs.
+		float geq = (ain > 0.08) ? clamp(0.4 / ain, AGC_MIN, AGC_MAX) : AGC_MAX;
+
+		float dev = g - geq;
+		float a2 = (dev * dev + (gv / w) * (gv / w)) / max(L * L, 1.0e-6);
+		float zeta = (L > 1.0e-4) ? clamp(0.5 * (a2 - 1.0), -0.5, 1.0) : 0.8;
+		float acc = -w * w * dev - 2.0 * zeta * w * gv;
+		gv = clamp(gv + acc * dt, -32.0, 32.0);
+		g = clamp(g + gv * dt, AGC_MIN, AGC_MAX);
+	}
+
+	return float4(g / 4.0, clamp(gv / 64.0 + 0.5, 0.0, 1.0), saturate(ain), 0.618);
+}
+
 //============================================================================
 // Decode : Y/C separation + synchronous chroma demodulation -> RGB
 //============================================================================
@@ -1120,6 +1198,23 @@ float4 PSDecode(VertData v) : TARGET
 	float ckill = (killer_auto > 0.5) ? lock : 1.0;
 	ci *= inv * chroma_gain * ckill;
 	cq *= inv * chroma_gain * ckill;
+
+	// The receiver's AGC gain for this row: video relative to blanking,
+	// chroma along with it (IF gain scales the whole signal). The detector
+	// already normalises statically - its snow branch IS the wound-up AGC
+	// at full gain - so what is applied here is the loop's departure from
+	// its steady state at this field strength: clean signal settles at 1,
+	// snow settles at AGC_MAX, and only the dynamics show. Which is what
+	// makes them visible at all: the signal vanishes and the screen goes
+	// dark for a moment before the snow winds up, it returns and the
+	// picture flashes white before the gain comes down.
+	float4 ag = agc_tex.Sample(pointClamp, tuv);
+	float gain = 1.0;
+	if (abs(ag.a - 0.618) < 0.01)
+		gain = ag.r * 4.0 / lerp(AGC_MAX, 1.0, det_blend);
+	luma *= gain;
+	ci *= gain;
+	cq *= gain;
 
 	float Y = luma * contrast + brightness;
 	float3 rgb = float3(
@@ -1510,6 +1605,10 @@ float4 PSDisplay(VertData v) : TARGET
 					outCol = float3(1.0, 0.72, 0.2);
 				if (abs(val - (-0.2 + tk2.a * 0.25)) < w)
 					outCol = lerp(outCol, float3(0.3, 0.8, 0.95), 0.8);
+				// magenta = the AGC gain (1.0 sits at 0.55, +-0.4 per unit)
+				float4 ag2 = agc_tex.Sample(pointClamp, fuv);
+				if (abs(ag2.a - 0.618) < 0.01 && abs(val - (0.55 + (ag2.r * 4.0 - 1.0) * 0.4)) < w)
+					outCol = lerp(outCol, float3(0.95, 0.4, 0.9), 0.85);
 			}
 		}
 	}
@@ -1641,5 +1740,14 @@ technique VFlywheel
 	{
 		vertex_shader = VSDefault(v);
 		pixel_shader  = PSVFlywheel(v);
+	}
+}
+
+technique Agc
+{
+	pass
+	{
+		vertex_shader = VSDefault(v);
+		pixel_shader  = PSAgc(v);
 	}
 }
