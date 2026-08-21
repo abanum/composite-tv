@@ -852,8 +852,6 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	/* The slider is a scan line of the 486-line frame; the shader wants the
 	 * signal row, which is the field row plus the VBI block above it. */
 	set_f(e, "scope_line", floorf(f->scope_line * ((float)FIELD_H / (float)ACTIVE_LINES)) + (float)SIG_VBI_ROWS);
-	/* Trace a line in the lower half and the panel moves out of its way. */
-	set_f(e, "scope_top", f->scope_line >= 241.0f ? 1.0f : 0.0f);
 
 	/* Signal output header metadata. The format the header reports is the
 	 * one actually packed: with the display mode on "none" the published
