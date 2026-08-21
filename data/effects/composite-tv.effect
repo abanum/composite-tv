@@ -319,6 +319,18 @@ float compositeAt(int n, int ln)
 	return (compAt(n, ln) - STORE_BIAS) / STORE_SCALE;
 }
 
+// The same read without a gradient: SampleLevel lets a loop of varying trip
+// count around it stay a loop. Sample() inside such a loop makes the HLSL
+// compiler try to unroll it, and a 263 x 14 nest (the Agc pass) does not
+// unroll - the whole effect then fails to load.
+float compositeAtL(int n, int ln)
+{
+	int nx = clamp(n, 0, SIG_W - 1);
+	int ny = clamp(ln, 0, SIG_H - 1);
+	float2 uv = float2(((float)nx + 0.5) / (float)SIG_W, ((float)ny + 0.5) / (float)SIG_H);
+	return (image.SampleLevel(pointClamp, uv, 0.0).r - STORE_BIAS) / STORE_SCALE;
+}
+
 // Sync structure of the full-line raster, in video units (blanking = 0, sync
 // tip = SYNC_LEVEL). Rows 0..8 carry the vertical interval - equalizing
 // pulses, the serrated vertical sync, equalizing pulses again, all at twice
@@ -1048,15 +1060,15 @@ float4 PSAgc(VertData v) : TARGET
 
 	float ain = 0.4;
 	for (int r = 0; r <= row; ++r) {
-		float4 fw = flywheel_tex.Sample(pointClamp, float2(((float)r + 0.5) / (float)SIG_H, 0.5));
+		float4 fw = flywheel_tex.SampleLevel(pointClamp, float2(((float)r + 0.5) / (float)SIG_H, 0.5), 0.0);
 		float hs = (abs(fw.a - 0.618) < 0.01) ? (fw.r - 0.5) * PHASE_SPAN : 0.0;
 		int k = (int)floor(hs + 0.5);
 		float tip = 0.0;
 		float por = 0.0;
 		for (int m = 0; m < 8; ++m)
-			tip += compositeAt(SYNC_EDGE + 8 + m * 6 + k, r);
+			tip += compositeAtL(SYNC_EDGE + 8 + m * 6 + k, r);
 		for (int m2 = 0; m2 < 6; ++m2)
-			por += compositeAt(BURST_END + 1 + m2 * 2 + k, r);
+			por += compositeAtL(BURST_END + 1 + m2 * 2 + k, r);
 		ain = por / 6.0 - tip / 8.0;
 		// No sync under the key: the reference is gone and the gain climbs.
 		float geq = (ain > 0.08) ? clamp(0.4 / ain, AGC_MIN, AGC_MAX) : AGC_MAX;
