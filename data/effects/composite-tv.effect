@@ -810,17 +810,24 @@ float4 PSTrack(VertData v) : TARGET
 	// The nine vertical-pulse rows keep their edges at the nominal spot by
 	// construction - that is exactly what equalizing pulses are for - so the
 	// horizontal separator reports nominal here. What these rows DO carry
-	// is the vertical separator's raw material: an integrating separator
-	// distinguishes the field pulses by how much of the line sits at sync
-	// level - the broad serrations fill it, the narrow equalizers do not,
-	// and snow drowns the difference. Measure the charge into B; the
-	// VFlywheel pass does the judging.
+	// is the vertical separator's raw material.
+	//
+	// A real separator is not a counter of threshold crossings: it is a
+	// rectifier that conducts below blanking, feeding an integrator, and
+	// what the trigger sees is the CHARGE that lands in it. So integrate
+	// the rectified line - the broad serrations fill it, the narrow
+	// equalizers barely tickle it, and noise averages over the whole line
+	// rather than being resolved sample by sample. That averaging is why a
+	// real set holds its vertical long after the colour has gone; the
+	// rectifier's clipping is why snow eventually erases the difference
+	// anyway. Measure the charge into B; the VFlywheel pass does the
+	// judging.
 	if (row < 9) {
-		float low = 0.0;
+		float acc = 0.0;
 		for (int m = 0; m < SIG_W; ++m)
-			if (compositeAt(m, row) < -0.25)
-				low += 1.0;
-		return float4(0.5, 0.5, low / (float)SIG_W, 1.0);
+			acc += clamp(compositeAtL(m, row), SYNC_LEVEL, 0.0);
+		/* acc and SYNC_LEVEL are both negative, so this lands in 0..1 */
+		return float4(0.5, 0.5, acc / ((float)SIG_W * SYNC_LEVEL), 1.0);
 	}
 
 	// Sync separator, matched-filter style: slide a window the width of the
@@ -1010,7 +1017,15 @@ float4 PSVFlywheel(VertData v) : TARGET
 		else
 			ce += c / 6.0;
 	}
-	float qv = saturate((cs - ce - 0.25) * 3.0);
+	// The discriminant is that charge difference, and its own measurement
+	// noise is about 0.01 whatever the field strength (910 samples a line,
+	// three rows against six). So the trigger threshold belongs at three
+	// sigma of that - the same detection logic the burst gate uses - not
+	// at a third of the clean-signal difference, which is where it used to
+	// sit and which put the cliff at field strength 0.7. That let the
+	// vertical go long before the horizontal, backwards for a set whose
+	// integrator is its most noise-immune stage.
+	float qv = saturate((cs - ce - 0.03) * 6.0);
 
 	// Free run: the designed-in slowness, the knob's detune, and a wander
 	// that only matters once the serrations are drowned.
