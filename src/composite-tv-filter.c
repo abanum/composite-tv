@@ -939,23 +939,27 @@ static void apply_params(struct composite_tv *f, gs_effect_t *e, uint32_t cx, ui
 	set_f(e, "field_strength", fs_eff);
 	set_f(e, "noise_floor", f->noise_floor);
 	set_f(e, "agc_hunt", f->agc_jitter);
-	/* H-HOLD: the knob detunes the line oscillator's free run. The AFC can
-	 * correct at most 0.08 * 30 = 2.4 samples per line, so hold is lost
-	 * near knob 0.39. Below that, a marginal-stability band drives the
-	 * serpentine limit cycle; above it the free-running phase winds the
-	 * raster round the line - about 4.5 diagonal copies at full detune.
-	 * Both knobs are bipolar, centre = lock: the sign is the direction
-	 * of the detune, which way the copies lean and the frame rolls. */
+	/* H-HOLD: the knob detunes the line oscillator's free run, and the
+	 * range comes from the receiver rather than from taste. One sample of
+	 * slip per line is 17.29 Hz, the LM1391's hold-in range is +-900 Hz =
+	 * 52 samples a line, and the knob is scaled so full travel is about
+	 * +-1500 Hz: locked over the middle three quarters, then torn into one
+	 * diagonal copy per 59.94 Hz beyond it. The loop's instability comes up
+	 * as the oscillator nears the end of its pull, which is where a real
+	 * set starts to weave before it lets go. Both knobs are bipolar,
+	 * centre = lock, sign = direction. */
 	const float hh = f->h_hold + (f->glitch_h_hold - f->h_hold) * erx;
 	const float ha = fabsf(hh);
-	set_f(e, "afc_freerun", 16.0f * hh * ha);
-	set_f(e, "afc_slop", smoothstepf(0.10f, 0.32f, ha) * (1.0f - smoothstepf(0.36f, 0.55f, ha)));
-	/* V-HOLD: detune of a triggered oscillator built to free-run 6 rows a
-	 * field slow. Toward fast it crosses zero near knob +0.5 and the frame
-	 * rolls, smoothly faster beyond; toward slow it misses the 16-row
-	 * trigger window near -0.65 and rolls the other way in jerks. */
+	set_f(e, "afc_freerun", 87.0f * hh * ha);
+	set_f(e, "afc_slop", smoothstepf(0.35f, 0.75f, ha));
+	/* V-HOLD: detune of a triggered oscillator built to free-run 27 rows a
+	 * field slow (54 Hz, the TDA1170's preset scaled to NTSC). Full travel
+	 * is 100 rows a field, so toward fast it crosses the field rate near
+	 * knob +0.55 and the frame rolls smoothly, while toward slow it holds
+	 * to about -0.85 before dropping out of the 100-row trigger window and
+	 * rolling the other way in jerks. */
 	const float vh = f->v_hold + (f->glitch_v_hold - f->v_hold) * erx;
-	set_f(e, "vafc_freerun", 24.0f * vh * fabsf(vh));
+	set_f(e, "vafc_freerun", 100.0f * vh * fabsf(vh));
 	set_f(e, "snow_level", f->agc_level);
 	set_f(e, "noise_norm_inv", f->noise_norm_inv);
 	set_f(e, "det_sigma", 1.0f + (f->noise_floor - 1.0f) * fs_eff);

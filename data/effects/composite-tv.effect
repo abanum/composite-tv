@@ -213,8 +213,21 @@ uniform float flash;              // discharge flash amount
 #define SYNC_SEARCH 30            /* gate half-width the separator hunts over */
 #define TRACK_SPAN 160.0          /* offset storage scale, samples */
 #define PHASE_SPAN 1024.0         /* oscillator phase storage scale: must hold a half line */
-#define AFC_GAIN 0.08             /* tracking gain per locked line: tau of ~12 lines */
-#define HOLD_RESIDUAL 1.2         /* natural free-run error, samples/line, felt only off lock */
+/* The horizontal AFC, sized from the LM1391 TV horizontal PLL (National
+ * Semiconductor). Its three published numbers pin the loop down: hold-in
+ * range +-900 Hz, pull-in +-300 Hz, and a static phase error of 0.5 us at
+ * 300 Hz off. One sample per line of slip is f_H/910 = 17.29 Hz, so 300 Hz
+ * is 17.35 samples a line and 0.5 us is 7.16 samples - a DC loop gain of
+ * 2.4 per line. That gain cannot live in a single-pole loop (it would
+ * diverge), which is why the real set filters it: high DC gain, low
+ * bandwidth. So the flywheel carries a frequency state through a lag
+ * filter (AFC_INT / AFC_LEAK set the DC gain) alongside the proportional
+ * path that sets the bandwidth, and the oscillator's own pullability
+ * (AFC_PULL) is what finally decides where hold gives out. */
+#define AFC_GAIN 0.08             /* proportional path: bandwidth, tau ~12 lines */
+#define AFC_INT 0.0048            /* integrator charge rate per line */
+#define AFC_LEAK 0.002            /* lag: AFC_INT / AFC_LEAK = DC gain of 2.4 */
+#define AFC_PULL 52.0             /* oscillator control range, smp/line (= +-900 Hz) */
 
 /* Vertical hold (VFlywheel pass): the field oscillator, one state for the
  * whole field, phase in field rows, stored as value / VPHASE_SPAN + 0.5.
@@ -223,8 +236,15 @@ uniform float flash;              // discharge flash amount
  * free-run a little slow (V_FREERUN) and catches a pulse that arrives in
  * the last V_GATE rows of its ramp. */
 #define VPHASE_SPAN 512.0         /* vertical phase storage scale: holds a half field */
-#define V_GATE 16.0               /* the ramp's final stretch in which a pulse fires it */
-#define V_FREERUN -6.0            /* designed-in free run, rows/field: slow, on purpose */
+/* Sized from the TDA1170 TV vertical deflection IC (SGS): its oscillator
+ * preset runs 42.2 to 48.5 Hz on a 50 Hz system - 84 to 97 per cent of the
+ * field rate, every bit of it deliberately slow - and its synchronization
+ * range is 14 Hz, 28 per cent of the field rate. Scaled to 59.94 Hz that is
+ * a free run near 54 Hz (27 rows a field slow) and a pulse that can fire
+ * the ramp up to 100 rows early, so the oscillator stays locked anywhere
+ * from 43 Hz up to the field rate itself. */
+#define V_GATE 100.0              /* how early a pulse can still fire the ramp, rows */
+#define V_FREERUN -27.0           /* designed-in free run, rows/field: slow, on purpose */
 
 /* Keyed AGC (Agc pass): per-row gain state, stored as gain / 4 in R and
  * gain velocity / 64 + 0.5 in G. The loop keys on the receiver's own line
@@ -908,42 +928,48 @@ float4 PSTrack(VertData v) : TARGET
 // through untouched, and as the sync sinks into noise the picture starts to
 // swim and finally tears diagonally - all from the same three terms.
 // The H-HOLD knob detunes the line oscillator's free-run frequency
-// (afc_freerun, samples of extra advance per line). The AFC can correct at
-// most AFC_GAIN * SYNC_SEARCH samples per line, so small detune just parks
-// the picture off-centre; near that margin the loop's stability runs out
-// and it settles into a LIMIT CYCLE (afc_slop drives it), a sustained
-// self-oscillation whose amplitude the nonlinearity caps - van der Pol
-// dynamics, the serpentine of a set about to lose hold. Past the margin
-// the correction loses outright: the phase slips cycles, the raster winds
-// round the line like a barber pole, and the further the detune the more
-// diagonal copies fit on screen. State carries across fields, so both the
-// serpentine and the unlocked pattern crawl instead of re-rolling.
+// (afc_freerun, extra samples of advance per line). What holds it is a
+// type-1 loop: a sawtooth phase detector - the sync pulse compared against
+// the oscillator's own ramp, so the error wraps over a whole line - into a
+// lag filter whose DC gain is 2.4 per line, plus a proportional path for
+// bandwidth. Steady state therefore keeps a static phase error of
+// detune / 2.4, which is the picture sitting slightly off centre before
+// anything else goes wrong: 0.5 us at 300 Hz, 1.5 us at the hold limit.
+// Hold gives out where the oscillator runs out of pull (AFC_PULL): past
+// that the phase slips cycle after cycle and the raster winds round the
+// line like a barber pole, one diagonal copy per 59.94 Hz of detune.
+//
+// afc_slop is the loop's own instability, and it now lives inside the
+// loop rather than beside it: it drives the proportional term's damping
+// negative for small errors and positive for large ones, so a second-order
+// loop that would ring itself out instead settles into a sustained
+// serpentine - the picture of a set whose AFC filter has drifted off its
+// design point. State carries across fields, so the waves crawl rather
+// than re-rolling.
 float4 PSFlywheel(VertData v) : TARGET
 {
 	int row = clamp((int)floor(v.uv.x * (float)SIG_H), 0, SIG_H - 1);
 
-	// Continue last field's state: tracker phase (R), the limit cycle's
-	// position (G) and velocity (B). The alpha carries a magic value so a
-	// fallback binding or an uninitialized texture can never masquerade as
-	// history - anything without the magic seeds from rest instead of
-	// slamming the tracker to whatever the stray pixels decode to.
+	// Continue last field's state: oscillator phase (R) and the lag
+	// filter's frequency correction (G). The alpha carries a magic value so
+	// a fallback binding or an uninitialized texture can never masquerade
+	// as history - anything without the magic seeds from rest instead of
+	// slamming the loop to whatever the stray pixels decode to.
 	float2 last = float2(((float)(SIG_H - 1) + 0.5) / (float)SIG_H, 0.5);
 	float4 pv = flywheel_prev.Sample(pointClamp, last);
 	float h = 0.0;
-	float ho = 0.0;
-	float vo = 0.0;
+	float fc = 0.0;
 	if (abs(pv.a - 0.618) < 0.01) {
-		h  = clamp((pv.r - 0.5) * PHASE_SPAN, -(float)HALF_LINE, (float)HALF_LINE);
-		ho = clamp((pv.g - 0.5) * TRACK_SPAN, -80.0, 80.0);
-		vo = clamp((pv.b - 0.5) * 32.0, -16.0, 16.0);
+		h = clamp((pv.r - 0.5) * PHASE_SPAN, -(float)HALF_LINE, (float)HALF_LINE);
+		fc = clamp((pv.g - 0.5) * TRACK_SPAN, -AFC_PULL, AFC_PULL);
 	}
 
-	// A dead-still cycle needs a nudge to find out whether it should grow.
-	if (afc_slop > 0.0 && abs(ho) + abs(vo) * 10.0 < 0.5)
-		vo = 0.1;
+	// A loop sitting exactly at rest needs a nudge to find out whether its
+	// damping is negative.
+	if (afc_slop > 0.0 && abs(h) < 0.25)
+		h = 0.25;
 
-	float L = 60.0 * afc_slop * afc_slop + 1.0e-3;
-	float mu = 0.2 * afc_slop;
+	float lim = 60.0 * afc_slop + 1.0e-3;
 
 	for (int r = 0; r <= row; ++r) {
 		float2 uv = float2(((float)r + 0.5) / (float)SIG_H, 0.5);
@@ -951,39 +977,24 @@ float4 PSFlywheel(VertData v) : TARGET
 		float e = (t.r - 0.5) * TRACK_SPAN;
 		float q = t.a;
 
-		// The line oscillator advances by its detune every line, and the
-		// phase detector can only correct it while the sync pulse falls
-		// inside the separator's gate. Within hold range this reduces to
-		// the old trust-weighted tracker (steady error = detune / gain);
-		// past it the correction per line loses to the detune, the loop
-		// slips cycles, and the phase runs away - horizontal unlock.
-		h += afc_freerun + (1.0 - q) * afc_drift;
-		float err = h - e;
-		if (abs(err) < (float)SYNC_SEARCH)
-			h -= AFC_GAIN * q * err;
-		else
-			// Even a healthy oscillator never free-runs at exactly
-			// line rate - off lock, the residual error the AFC
-			// normally nulls sweeps the phase on until sync re-enters
-			// the gate and the loop snaps back in. Without this a
-			// knob yanked back to zero would freeze the raster
-			// wherever the phase happened to be.
-			h += HOLD_RESIDUAL;
-		// Phase is modulo the line. Each pass through coincidence lets
-		// the AFC grab and lose it again - the sticky crawl of a real
-		// unlocked raster.
+		// Damping, made negative inside the limit amplitude when the knob
+		// asks for an unstable loop.
+		float a2 = (h * h) / (lim * lim);
+		float kp = AFC_GAIN * (1.0 - 2.0 * afc_slop * (1.0 - a2));
+
+		// What the oscillator actually runs at: its detune, whatever the
+		// loop is correcting, and free-run drift for the trust that is
+		// missing. The correction cannot exceed the oscillator's pull.
+		float corr = clamp((fc - kp * (h - e)) * q, -AFC_PULL, AFC_PULL);
+		h += afc_freerun + corr + (1.0 - q) * afc_drift;
 		h -= (float)SIG_W * floor(h / (float)SIG_W + 0.5);
 
-		// The limit cycle: negative damping inside the target amplitude,
-		// positive outside, so it neither dies nor blows up.
-		float a2 = (ho * ho + (vo / 0.1) * (vo / 0.1)) / (L * L);
-		vo += 0.1 * (mu * (1.0 - a2) - 0.15 * (1.0 - afc_slop)) * vo - 0.01 * ho;
-		vo = clamp(vo, -16.0, 16.0);
-		ho = clamp(ho + vo, -80.0, 80.0);
+		// The lag filter: charge toward cancelling the phase error, leak
+		// slowly, and never ask for more than the oscillator can give.
+		fc = clamp(fc * (1.0 - AFC_LEAK) - AFC_INT * q * (h - e), -AFC_PULL, AFC_PULL);
 	}
 
-	return float4(clamp(h / PHASE_SPAN + 0.5, 0.0, 1.0), clamp(ho / TRACK_SPAN + 0.5, 0.0, 1.0),
-		      clamp(vo / 32.0 + 0.5, 0.0, 1.0), 0.618);
+	return float4(clamp(h / PHASE_SPAN + 0.5, 0.0, 1.0), clamp(fc / TRACK_SPAN + 0.5, 0.0, 1.0), 0.5, 0.618);
 }
 
 // The vertical oscillator: one state for the whole field. The integrator
@@ -1035,8 +1046,14 @@ float4 PSVFlywheel(VertData v) : TARGET
 	// the phase resets to coincidence, as surely as the pulse is there.
 	// Positive vp = the oscillator already fired on its own - the pulse
 	// finds nothing to trigger and is missed.
-	if (vp <= 0.0 && vp >= -V_GATE)
-		vp -= qv * vp;
+	// The trigger is regenerative: it fires the ramp or it does not, and it
+	// cannot half-discharge it. So trust is not a gain here - it is the
+	// odds of a clean firing, and what is left over is timing jitter. A
+	// missed firing only delays the reset by one field, which the wide
+	// gate absorbs; the picture bounces long before it ever rolls, and
+	// only when misses come in runs does the ramp walk out of the gate.
+	if (vp <= 0.0 && vp >= -V_GATE && hash13(float3((float)field_seed, 11.0, 3.0)) < qv)
+		vp = (hash13(float3((float)field_seed, 23.0, 5.0)) - 0.5) * 24.0 * (1.0 - qv);
 	vp -= (float)SIG_H * floor(vp / (float)SIG_H + 0.5);
 
 	return float4(clamp(vp / VPHASE_SPAN + 0.5, 0.0, 1.0), 0.5, qv, 0.618);
@@ -1346,8 +1363,10 @@ float lineShift(int li)
 	// is the honest fallback.
 	if (abs(fw.a - 0.618) > 0.01)
 		return 0.0;
-	/* oscillator phase plus the marginal AFC's limit cycle */
-	return ((fw.r - 0.5) * PHASE_SPAN + (fw.g - 0.5) * TRACK_SPAN) / field_size.x;
+	/* the oscillator's phase - the serpentine is in here too now, because
+	 * the limit cycle is the loop's own instability rather than a separate
+	 * oscillator sitting beside it */
+	return (fw.r - 0.5) * PHASE_SPAN / field_size.x;
 }
 
 // Sample a scan ln, choosing the current or previous field for the weave.
@@ -1613,8 +1632,7 @@ float4 PSDisplay(VertData v) : TARGET
 			float4 tk2 = track_tex.Sample(pointClamp, fuv);
 			float hshift = 0.0; /* fraction of a full line, -0.5..0.5 */
 			if (abs(fw2.a - 0.618) < 0.01)
-				hshift = ((fw2.r - 0.5) * PHASE_SPAN + (fw2.g - 0.5) * TRACK_SPAN) /
-					 (float)SIG_W;
+				hshift = (fw2.r - 0.5) * PHASE_SPAN / (float)SIG_W;
 			if (tx >= 0.0 && tx <= 1.0) {
 				if (abs(val - (0.35 + hshift)) < w * 1.2)
 					outCol = float3(1.0, 0.72, 0.2);
